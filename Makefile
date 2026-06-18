@@ -1,4 +1,4 @@
-.PHONY: build test fmt clean
+.PHONY: build test fmt clean lint check
 build:
 	go build -o bin/policy-engine ./...
 test:
@@ -7,3 +7,6 @@ fmt:
 	go fmt ./...
 clean:
 	rm -rf bin
+lint:
+	golangci-lint run ./...
+check: build test lint

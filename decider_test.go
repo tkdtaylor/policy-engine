@@ -281,7 +281,7 @@ func waitForSocket(t *testing.T, path string) {
 		if _, err := os.Stat(path); err == nil {
 			// Confirm it actually accepts a dial.
 			if c, err := net.Dial("unix", path); err == nil {
-				c.Close()
+				_ = c.Close()
 				return
 			}
 		}
@@ -296,12 +296,12 @@ func ipcRoundTrip(t *testing.T, path string, msg map[string]any) map[string]any 
 	if err != nil {
 		t.Fatalf("dial %s: %v", path, err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	b, _ := json.Marshal(msg)
 	if _, err := conn.Write(append(b, '\n')); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	line, err := bufio.NewReader(conn).ReadBytes('\n')
 	if err != nil && len(line) == 0 {
 		t.Fatalf("read response: %v", err)

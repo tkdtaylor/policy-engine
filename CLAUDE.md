@@ -79,6 +79,8 @@ go test ./...                           # run tests
 go fmt ./...                            # format
 make build                              # build to bin/policy-engine
 make test                               # go test ./...
+make lint                               # golangci-lint run ./... (standard set)
+make check                              # build + test + lint — the verification gate
 make fmt                                # go fmt ./...
 make clean                              # rm -rf bin
 
@@ -87,9 +89,11 @@ make clean                              # rm -rf bin
 ./policy-engine decide --allow api.example.com --host evil.example.net   # exits non-zero on deny
 ```
 
-There is no `make check` / `make fitness` target yet — `go build ./... && go test ./...` is
-the verification gate today. Fitness functions are seeded as `proposed` in
-`docs/spec/fitness-functions.md`; wiring the Makefile targets is future work.
+`make check` (build + test + lint via `golangci-lint`'s `standard` set: errcheck, govet,
+ineffassign, staticcheck, unused) is the verification gate today. The lint stage is wired as the
+first **active** fitness function (F-005 in `docs/spec/fitness-functions.md`). A `make fitness`
+umbrella target still does not exist — the four security invariants F-001…F-004 remain `proposed`
+pending bespoke `make fitness-*` runners.
 
 ## Conventions
 

@@ -13,7 +13,7 @@ var errNotReady = errors.New("OPA policy/query did not prepare (fail-closed: no 
 // initialize (policy set / entity store did not build). selectDecider wraps it with context; the
 // not-ready gate is shared so tests can assert it. A distinct sentinel from errNotReady keeps the
 // two evaluators' init-failure reasons separable.
-var errCedarNotReady = errors.New("Cedar policy set did not parse (fail-closed: no fallback to allowlist)")
+var errCedarNotReady = errors.New("cedar policy set did not parse (fail-closed: no fallback to allowlist)")
 
 // Decider is the AuthZEN adapter seam as an interface: AuthZEN request in, AuthZEN response out.
 // Both the v0 in-memory *Engine (policy.go) and the OPA/Rego *OPAEngine (opa.go) already satisfy

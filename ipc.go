@@ -26,7 +26,7 @@ func serve(socketPath string, engine Decider, limiter rateLimiter) error {
 	if err != nil {
 		return err
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	_ = os.Chmod(socketPath, 0o600)
 
 	for {
@@ -35,7 +35,7 @@ func serve(socketPath string, engine Decider, limiter rateLimiter) error {
 			return err
 		}
 		go func(c net.Conn) {
-			defer c.Close()
+			defer func() { _ = c.Close() }()
 			line, err := bufio.NewReader(c).ReadBytes('\n')
 			if err != nil && len(line) == 0 {
 				return
@@ -70,7 +70,7 @@ func serve(socketPath string, engine Decider, limiter rateLimiter) error {
 
 func writeJSON(conn net.Conn, v any) {
 	b, _ := json.Marshal(v)
-	conn.Write(append(b, '\n'))
+	_, _ = conn.Write(append(b, '\n'))
 }
 
 func errShape(code, msg string) map[string]any {
