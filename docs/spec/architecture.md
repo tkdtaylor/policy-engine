@@ -36,11 +36,15 @@ decision that the agent runtime honors. The integration is the obligation contra
 
 | Name | Technology | Responsibility | Source path | Depends on |
 |------|------------|----------------|-------------|------------|
-| policy-engine binary | Go 1.26 single static binary | Evaluate AuthZEN decisions out-of-process; serve over Unix socket or one-shot CLI | `main.go`, `policy.go`, `ipc.go` | — (stdlib only in v0) |
+| policy-engine binary | Go 1.26 single static binary | Evaluate AuthZEN decisions out-of-process; serve over Unix socket or one-shot CLI; select the evaluator backend at the `Decider` seam | `main.go`, `decider.go`, `policy.go`, `ipc.go`, `opa.go`, `policy.rego`, `cedar.go` | `github.com/open-policy-agent/opa` v0.70.0 + `github.com/cedar-policy/cedar-go` v1.8.0 (embedded libraries, linked in) |
 
 **Invariants for this table**
 - The single container corresponds to the root `package main` (the flat layout, ADR-001 §2).
-- No external runtime dependency in v0; the first will be OPA (task 001), behind the `Engine.Decide` seam.
+- OPA (Rego) and Cedar are embedded as **Go libraries linked into the one binary** (ADR-002,
+  ADR-005), not sidecars — the single-static-binary deployment is preserved (cedar-go is pure-Go,
+  no CGo). The embedded `policy.rego` is the OPA evaluator's policy; an embedded Cedar policy string
+  in `cedar.go` is the Cedar evaluator's policy. This ended the v0 zero-runtime-dependency property;
+  the OPA and cedar-go module trees are now supply-chain surfaces (dep-scan / code-scanner gates).
 
 ---
 
@@ -48,9 +52,14 @@ decision that the agent runtime honors. The integration is the obligation contra
 
 | Container | Component | Source path | Responsibility | Depends on |
 |-----------|-----------|-------------|----------------|------------|
-| policy-engine binary | CLI / dispatch | `main.go` | Parse `serve`/`decide` subcommands and flags; build `Engine`; one-shot decide; exit codes | Engine, IPC server |
-| policy-engine binary | IPC server | `ipc.go` | Bind Unix socket (0600); frame newline-delimited `{op,request}` JSON; dispatch `decide`/`ping`; structured errors | Engine |
-| policy-engine binary | Engine.Decide | `policy.go` | The AuthZEN evaluator (v0 in-memory allowlist) + obligation emission — the adapter seam | — |
+| policy-engine binary | CLI / dispatch | `main.go` | Parse `serve`/`decide` subcommands and flags (incl. `--evaluator`); select the evaluator via `selectDecider`; one-shot decide; exit codes; fail-closed on evaluator init failure | Decider seam, IPC server |
+| policy-engine binary | Evaluator seam / selection | `decider.go` | The `Decider` interface (AuthZEN in/out) all three engines satisfy; `selectDecider` maps `--evaluator` → `*Engine`\|`*OPAEngine`\|`*CedarEngine`, fail-closed (no allowlist fallback) on OPA/Cedar init failure | Engine, OPAEngine, CedarEngine |
+| policy-engine binary | IPC server | `ipc.go` | Bind Unix socket (0600); frame newline-delimited `{op,request}` JSON; rate-limit the `decide` op (reject-not-allow); dispatch `decide`/`ping`; structured errors (incl. `rate_limited`, `retryable:true`); routes `decide` through the (cached) `Decider` | Decider seam, Rate limiter, Decision cache |
+| policy-engine binary | Decision cache | `cache.go` | `cachingDecider` wraps a `Decider` (serve path only, ADR-004); canonical full-request key incl. `context`, short TTL; replays decisions byte-identically; never an allow path | Decider seam |
+| policy-engine binary | Rate limiter | `ratelimit.go` | Global token bucket on the serve `decide` op (ADR-004); over-limit → `rate_limited` retryable error before eval; reject-not-allow, never falls open | — |
+| policy-engine binary | Engine.Decide | `policy.go` | The v0 AuthZEN evaluator (in-memory allowlist) + obligation emission — one implementation of the adapter seam | — |
+| policy-engine binary | OPAEngine.Decide | `opa.go`, `policy.rego` | The OPA/Rego AuthZEN evaluator: marshals the request into a Rego input, evaluates the embedded `policy.rego`, translates the result back to AuthZEN — the second seam implementation (ADR-002). Fail-closed on any eval error/undefined result | `github.com/open-policy-agent/opa/rego` |
+| policy-engine binary | CedarEngine.Decide | `cedar.go` | The Cedar AuthZEN evaluator: reads the request into a `cedar.Request`, authorizes against an embedded Cedar policy + allowlist entity store, translates permit/forbid back to AuthZEN with the v0 baseline obligations attached Go-side — the third seam implementation (ADR-005). Baseline parity only (no risk/approval). Fail-closed on parse failure / forbid / unresolvable host | `github.com/cedar-policy/cedar-go` |
 
 ---
 
@@ -58,10 +67,19 @@ decision that the agent runtime honors. The integration is the obligation contra
 
 - **Out-of-process authorization** — the agent reaches the engine only via the IPC server; no
   in-process agent decide path. ([ADR-001](../architecture/decisions/001-foundational-stack.md) §1)
-- **AuthZEN adapter seam** — `Engine.Decide(request) -> response` is engine-agnostic; evaluators
-  swap behind it. (ADR-001 §3; the OPA adoption is task 001 / ADR-002.)
+- **AuthZEN adapter seam** — the `Decider` interface (`Decide(map[string]any) map[string]any`,
+  `decider.go`) is engine-agnostic; evaluators swap behind it and are selected at the binary boundary
+  via `--evaluator` (`selectDecider`). Three implementations exist: the v0 in-memory `Engine`, the
+  OPA/Rego `OPAEngine`, and the Cedar `CedarEngine` (ADR-001 §3, ADR-002, ADR-005). No
+  `rego.*`/`ast.*`/`cedar.*`/`types.*` type crosses the seam. Selecting `opa` or `cedar` when the
+  engine cannot init fails closed — never a silent allowlist fallback. `cedar` reproduces the v0
+  baseline only; `opa` carries the full risk/approval behavior (intentional asymmetry, ADR-005).
 - **Fail-closed** — every non-allow path resolves to deny / structured error. (ADR-001 §7)
 - **Raise-only obligations** — `vault_injection_floor` tightens, never loosens. (ADR-001 §5)
+- **Decision cache + rate limiter are never an allow path** — on the `serve` path, the cache replays
+  exactly what the evaluator returned (full-request canonical key incl. `context`; short TTL bounds
+  staleness) and the rate limiter rejects over-limit `decide` traffic *before* evaluation with the
+  `rate_limited` retryable error. Neither has an error-to-allow path. ([ADR-004](../architecture/decisions/004-cache-and-rate-limit.md))
 
 ---
 
@@ -70,4 +88,4 @@ decision that the agent runtime honors. The integration is the obligation contra
 - Update in the same commit as `../architecture/diagrams.md` when structure changes.
 - Supersede in place; never append. The ADR carries the *why*.
 - The drift-audit mode of the `architect` agent uses this catalog against the import graph and
-  the deployable-artifact list. When ADR-002 embeds OPA, add it to Container §3 `Depends on`.
+  the deployable-artifact list. OPA is embedded (ADR-002) and recorded in Container §3 `Depends on`.

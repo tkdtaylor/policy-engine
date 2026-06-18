@@ -1,6 +1,6 @@
 # Architecture Diagrams — policy-engine
 
-**Last updated:** 2026-06-18
+**Last updated:** 2026-06-18 (task 006 — Cedar as a third evaluator behind the Decider seam, baseline parity, ADR-005)
 
 C4-structured Mermaid diagrams plus the primary runtime sequence. See
 [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced
@@ -54,22 +54,40 @@ C4Component
     Person(operator, "Operator")
 
     Container_Boundary(boundary, "policy-engine binary") {
-        Component(main, "CLI / dispatch", "main.go", "serve & decide subcommands; flag parsing; Engine construction")
-        Component(ipc, "IPC server", "ipc.go", "JSON over Unix socket; frames {op,request}; dispatch decide/ping")
-        Component(engine, "Engine.Decide", "policy.go", "AuthZEN evaluator (v0 in-memory allowlist) + obligation emission — the adapter seam")
+        Component(main, "CLI / dispatch", "main.go", "serve & decide subcommands; flag parsing (--evaluator, --cache-ttl, --rate-limit); selectDecider; exit codes")
+        Component(seam, "Decider seam / selection", "decider.go", "Decider interface + selectDecider: maps --evaluator → engine; fail-closed on OPA/Cedar init failure (no allowlist fallback)")
+        Component(ipc, "IPC server", "ipc.go", "JSON over Unix socket; frames {op,request}; rate-limits decide (reject-not-allow); dispatch decide/ping; routes decide through the (cached) Decider")
+        Component(limiter, "Rate limiter", "ratelimit.go", "token bucket on the serve decide op (ADR-004); over-limit → rate_limited retryable error BEFORE eval, never an allow")
+        Component(cache, "Decision cache", "cache.go", "cachingDecider wraps a Decider (serve only, ADR-004); canonical full-request key incl. context, short TTL; replays byte-identically, never an allow path")
+        Component(engine, "Engine.Decide", "policy.go", "v0 AuthZEN evaluator (in-memory allowlist) — one Decider implementation")
+        Component(opa, "OPAEngine.Decide", "opa.go + policy.rego", "OPA/Rego AuthZEN evaluator (ADR-002); marshal request→Rego input, eval embedded policy, translate result→AuthZEN")
+        Component(cedar, "CedarEngine.Decide", "cedar.go", "Cedar AuthZEN evaluator (ADR-005); authorize request vs embedded Cedar policy + allowlist entity store, translate permit/forbid→AuthZEN; baseline parity only (no risk/approval)")
     }
 
     Rel(agent, ipc, "decide", "JSON / Unix socket")
-    Rel(operator, main, "serve / decide", "CLI")
-    Rel(main, ipc, "starts (serve)")
-    Rel(main, engine, "calls (decide CLI)")
-    Rel(ipc, engine, "Decide(request)")
+    Rel(operator, main, "serve / decide --evaluator", "CLI")
+    Rel(main, seam, "selectDecider(--evaluator)")
+    Rel(main, cache, "wraps selected Decider (serve)")
+    Rel(main, ipc, "starts (serve) with cached Decider + limiter")
+    Rel(ipc, limiter, "Allow() before decide eval")
+    Rel(ipc, cache, "Decide(request) — via Decider seam (serve)")
+    Rel(cache, engine, "miss → Decide (allowlist)")
+    Rel(cache, opa, "miss → Decide (opa)")
+    Rel(cache, cedar, "miss → Decide (cedar)")
+    Rel(seam, engine, "allowlist → *Engine")
+    Rel(seam, opa, "opa → *OPAEngine (if Ready)")
+    Rel(seam, cedar, "cedar → *CedarEngine (if Ready)")
+    Rel(main, engine, "Decide (decide CLI, via Decider — NOT cached)")
+    Rel(main, opa, "Decide (decide CLI, via Decider — NOT cached)")
+    Rel(main, cedar, "Decide (decide CLI, via Decider — NOT cached)")
 ```
 
 **Key contracts**
-- `Engine.Decide(map[string]any) -> map[string]any` is the **AuthZEN adapter seam** (ADR-001 §3).
-  Every future evaluator (OPA, Cedar) replaces the body of this method without changing callers.
-  No engine-specific type may appear in its argument or return value.
+- `Decide(map[string]any) -> map[string]any` is the **AuthZEN adapter seam** (ADR-001 §3). Three
+  implementations exist behind it — the in-memory `Engine`, the OPA/Rego `OPAEngine` (ADR-002), and
+  the Cedar `CedarEngine` (ADR-005, pure-Go cedar-go, baseline parity only); future evaluators
+  (OpenFGA) add another with the identical signature, without changing callers. No engine-specific
+  type (`rego.*`/`ast.*`/`cedar.*`/`types.*`) may appear in the argument or return value.
 - The agent reaches the engine **only via `ipc`** — never `main`'s in-process `decide` path
   (out-of-process invariant, ADR-001 §1).
 - `Decide` is **fail-closed**: any unmatched/unevaluable request returns `deny` (ADR-001 §7).
@@ -83,30 +101,56 @@ sequenceDiagram
     autonumber
     participant Agent
     participant IPC as ipc.serve (Unix socket)
-    participant Engine as Engine.Decide (policy.go)
+    participant RL as Rate limiter (ratelimit.go)
+    participant Cache as cachingDecider (cache.go)
+    participant Engine as Engine/OPAEngine/CedarEngine.Decide
 
     Agent->>IPC: {"op":"decide","request":{subject,action,resource,context}}
     IPC->>IPC: parse newline-delimited JSON
     alt malformed / missing request
         IPC-->>Agent: {"error":{code,message,retryable:false}}
-    else valid request
-        IPC->>Engine: Decide(request)
-        Engine->>Engine: resolve host = resource.id (or properties.host)
-        alt host in allowlist
-            Engine-->>IPC: {decision:"allow", context:{reason, obligations:[tier_select, vault_injection_floor→proxy, audit_emit]}}
-            IPC-->>Agent: allow + obligations
-            Note over Agent: agent runtime honors obligations,<br/>then invokes exec-sandbox
-        else host not in allowlist (fail-closed default)
-            Engine-->>IPC: {decision:"deny", context:{reason, obligations:[]}}
-            IPC-->>Agent: deny
-            Note over Agent: exec-sandbox is never invoked
+    else over rate limit (serve path)
+        IPC->>RL: Allow()
+        RL-->>IPC: false (no token)
+        IPC-->>Agent: {"error":{code:"rate_limited",message,retryable:true}}
+        Note over Agent: rejected BEFORE eval — never an allow (fail-closed)
+    else valid request, under limit
+        IPC->>RL: Allow()
+        RL-->>IPC: true (token consumed)
+        IPC->>Cache: Decide(request) — via Decider seam (serve)
+        alt unexpired entry for canonical full-request key (incl. context)
+            Cache-->>IPC: cached decision (byte-identical; never upgraded to allow)
+        else miss / expired
+            Cache->>Engine: Decide(request)
+            Engine->>Engine: resolve host = resource.id (or properties.host)
+            alt host in allowlist
+                Engine-->>Cache: {decision:"allow", context:{reason, obligations:[tier_select, vault_injection_floor, audit_emit]}}
+            else host not in allowlist (fail-closed default)
+                Engine-->>Cache: {decision:"deny", context:{reason, obligations:[]}}
+            end
+            Cache->>Cache: store decision until now+TTL
+            Cache-->>IPC: decision
         end
+        IPC-->>Agent: decision (+ obligations on allow)
+        Note over Agent: on allow, honor obligations then invoke exec-sandbox;<br/>on deny, exec-sandbox is never invoked
     end
 ```
 
+The one-shot CLI `decide` path is **not** rate-limited and **not** cached — it makes a single
+decision per process and calls the selected `Decider` directly (cache + limiter are `serve`-only,
+ADR-004).
+
 ADRs governing this flow: [ADR-001](decisions/001-foundational-stack.md) (out-of-process,
-AuthZEN seam, obligation model, fail-closed). The v1 OPA adoption (task 001 / ADR-002) replaces
-only the inner `Engine.Decide` evaluation step — this sequence shape is preserved.
+AuthZEN seam, obligation model, fail-closed), [ADR-002](decisions/002-opa-rego-embedded-library.md)
+(OPA/Rego evaluator), and [ADR-005](decisions/005-cedar-alternative-evaluator.md) (Cedar evaluator,
+baseline parity). Each evaluator adoption swaps only the inner evaluator (`OPAEngine.Decide` /
+`CedarEngine.Decide` in place of `Engine.Decide`) — this sequence shape, the IPC framing, and the
+obligation set are preserved. The evaluator behind `Decide` is chosen at startup by `--evaluator`
+(`selectDecider`, task 005); the sequence above is identical whichever evaluator is selected, since
+all three sit behind the `Decider` seam. The Cedar path is byte-for-byte identical to the allowlist
+baseline (no risk/approval — that is OPA-only, the intentional asymmetry in ADR-005). Selecting
+`opa` or `cedar` when the engine cannot init fails closed before the socket binds (no allowlist
+fallback).
 
 ---
 
@@ -116,6 +160,6 @@ only the inner `Engine.Decide` evaluation step — this sequence shape is preser
   integration (obligation type) is added or removed; an ADR changes a diagrammed flow. Keep
   [`../spec/architecture.md`](../spec/architecture.md) in sync.
 - **Edit existing over adding new.** Duplicates rot independently.
-- **Note ADRs that don't change diagrams.** When ADR-002 adopts OPA behind the seam, add a
-  one-line note that the sequence shape is preserved.
+- **Note ADRs that don't change diagrams.** ADR-002 added the `OPAEngine` component behind the
+  existing seam; the System Context and the runtime-sequence shape were preserved.
 - **Update the date at the top** when you change anything substantive.
