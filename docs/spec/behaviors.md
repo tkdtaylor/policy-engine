@@ -51,20 +51,39 @@ points* ([interfaces.md](interfaces.md)).
 
 ### B-004: Serve decisions over a Unix-socket IPC server
 
-- **Trigger:** `policy-engine serve --socket <path> --allow <hosts>`.
-- **Response:** binds a Unix socket at `<path>` (removing any stale socket first), `chmod 0600`,
-  and accepts connections. Each connection sends one newline-delimited JSON object; supported ops
-  are `decide` (→ B-001/B-002) and `ping` (→ `{ok:true}`). Logs the listen address to stderr.
+- **Trigger:** `policy-engine serve --socket <path> --allow <hosts> [--evaluator allowlist|opa]`.
+- **Response:** selects the evaluator behind the seam (B-007), binds a Unix socket at `<path>`
+  (removing any stale socket first), `chmod 0600`, and accepts connections. Each connection sends
+  one newline-delimited JSON object; supported ops are `decide` (→ B-001/B-002, routed through the
+  selected evaluator) and `ping` (→ `{ok:true}`). Logs the listen address and evaluator to stderr.
 - **Side effects:** creates the socket file; spawns a goroutine per connection.
-- **Failure modes:** missing `--socket` exits with usage error (`2`). A bind failure exits `1`.
+- **Failure modes:** missing `--socket` exits with usage error (`2`). A bind failure exits `1`. An
+  evaluator that cannot initialize (B-007) → refuses to start, exits `1`, socket never bound.
 
 ### B-005: One-shot CLI decision
 
-- **Trigger:** `policy-engine decide --allow <hosts> --host <h>`, or piping a full AuthZEN request
-  on stdin (no `--host`).
-- **Response:** evaluates one request and prints the indented JSON AuthZEN response.
+- **Trigger:** `policy-engine decide --allow <hosts> --host <h> [--evaluator allowlist|opa]`, or
+  piping a full AuthZEN request on stdin (no `--host`).
+- **Response:** selects the evaluator behind the seam (B-007), evaluates one request, and prints the
+  indented JSON AuthZEN response.
 - **Side effects:** stdout only. Exit code `0` on allow, `1` on any non-allow decision.
-- **Failure modes:** neither `--host` nor a parseable stdin request → usage error (`2`).
+- **Failure modes:** neither `--host` nor a parseable stdin request → usage error (`2`). An
+  evaluator that cannot initialize (B-007) → exits `1` (no allow, no fallback).
+
+### B-007: Select the evaluator backend (`--evaluator`)
+
+- **Trigger:** the `--evaluator` flag on `serve` or `decide` (default `allowlist`).
+- **Response:** maps the value to the engine behind the `Decider` seam — `allowlist` → v0 in-memory
+  `*Engine` (byte-identical to v0); `opa` → OPA/Rego `*OPAEngine`. The selected evaluator backs both
+  the one-shot `decide` and the long-running `serve`/IPC `decide` op. The AuthZEN request/response
+  contract is identical regardless of which evaluator is selected.
+- **Side effects:** none beyond constructing the chosen engine (the OPA path compiles the embedded
+  `policy.rego` query once at selection).
+- **Failure modes (fail-closed):** `--evaluator opa` when OPA cannot initialize
+  (`OPAEngine.Ready()==false`) → error, **no usable evaluator is returned, and there is NO silent
+  fallback to the allowlist** (a silent downgrade is a self-grant vector). An unknown value → error
+  naming the accepted values (`allowlist`, `opa`). Both error paths surface as a non-zero exit
+  (`serve` refuses to start with the socket unbound; `decide` exits `1`).
 
 ---
 
@@ -92,3 +111,6 @@ points* ([interfaces.md](interfaces.md)).
   boundary; the in-process `decide` is the operator CLI only.
 - **Obligations on `vault_injection_floor` only ever raise the floor.**
 - **A deny carries no obligations** and guarantees exec-sandbox is not invoked downstream.
+- **No silent evaluator downgrade.** When `--evaluator opa` is requested but OPA cannot initialize,
+  the binary fails closed (refuse to start / non-zero exit) — it never falls back to the allowlist.
+  A selected-but-broken stricter evaluator must never be silently replaced by a weaker one.

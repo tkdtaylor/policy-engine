@@ -40,13 +40,20 @@ func cmdServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	socket := fs.String("socket", "", "unix socket path (required)")
 	allow := fs.String("allow", "", "comma-separated net allowlist")
+	evaluator := fs.String("evaluator", EvaluatorAllowlist, "evaluator backend: allowlist|opa")
 	fs.Parse(args)
 	if *socket == "" {
 		fmt.Fprintln(os.Stderr, "serve: --socket is required")
 		os.Exit(2)
 	}
-	engine := NewEngine(splitCSV(*allow)...)
-	fmt.Fprintf(os.Stderr, "policy-engine serving on %s (allow=%v)\n", *socket, *allow)
+	// Fail-closed: an unknown evaluator or an OPA engine that did not initialize refuses to start
+	// (non-zero exit, socket never bound) — never a silent downgrade to the allowlist.
+	engine, err := selectDecider(*evaluator, splitCSV(*allow)...)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "serve: refusing to start:", err)
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "policy-engine serving on %s (evaluator=%s, allow=%v)\n", *socket, *evaluator, *allow)
 	if err := serve(*socket, engine); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -57,8 +64,15 @@ func cmdDecide(args []string) {
 	fs := flag.NewFlagSet("decide", flag.ExitOnError)
 	allow := fs.String("allow", "", "comma-separated net allowlist")
 	host := fs.String("host", "", "target host (shortcut; or pipe a full AuthZEN request on stdin)")
+	evaluator := fs.String("evaluator", EvaluatorAllowlist, "evaluator backend: allowlist|opa")
 	fs.Parse(args)
-	engine := NewEngine(splitCSV(*allow)...)
+	// Fail-closed: an unknown evaluator or an OPA engine that did not initialize errors out
+	// (non-zero exit) — the one-shot decide does NOT silently fall back to the allowlist.
+	engine, err := selectDecider(*evaluator, splitCSV(*allow)...)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "decide:", err)
+		os.Exit(1)
+	}
 
 	var req map[string]any
 	if *host != "" {

@@ -36,7 +36,7 @@ decision that the agent runtime honors. The integration is the obligation contra
 
 | Name | Technology | Responsibility | Source path | Depends on |
 |------|------------|----------------|-------------|------------|
-| policy-engine binary | Go 1.26 single static binary | Evaluate AuthZEN decisions out-of-process; serve over Unix socket or one-shot CLI | `main.go`, `policy.go`, `ipc.go`, `opa.go`, `policy.rego` | `github.com/open-policy-agent/opa` v0.42.1 (embedded library, linked in) |
+| policy-engine binary | Go 1.26 single static binary | Evaluate AuthZEN decisions out-of-process; serve over Unix socket or one-shot CLI; select the evaluator backend at the `Decider` seam | `main.go`, `decider.go`, `policy.go`, `ipc.go`, `opa.go`, `policy.rego` | `github.com/open-policy-agent/opa` v0.42.1 (embedded library, linked in) |
 
 **Invariants for this table**
 - The single container corresponds to the root `package main` (the flat layout, ADR-001 §2).
@@ -51,8 +51,9 @@ decision that the agent runtime honors. The integration is the obligation contra
 
 | Container | Component | Source path | Responsibility | Depends on |
 |-----------|-----------|-------------|----------------|------------|
-| policy-engine binary | CLI / dispatch | `main.go` | Parse `serve`/`decide` subcommands and flags; build `Engine`; one-shot decide; exit codes | Engine, IPC server |
-| policy-engine binary | IPC server | `ipc.go` | Bind Unix socket (0600); frame newline-delimited `{op,request}` JSON; dispatch `decide`/`ping`; structured errors | Engine |
+| policy-engine binary | CLI / dispatch | `main.go` | Parse `serve`/`decide` subcommands and flags (incl. `--evaluator`); select the evaluator via `selectDecider`; one-shot decide; exit codes; fail-closed on evaluator init failure | Decider seam, IPC server |
+| policy-engine binary | Evaluator seam / selection | `decider.go` | The `Decider` interface (AuthZEN in/out) both engines satisfy; `selectDecider` maps `--evaluator` → `*Engine`\|`*OPAEngine`, fail-closed (no allowlist fallback) on OPA init failure | Engine, OPAEngine |
+| policy-engine binary | IPC server | `ipc.go` | Bind Unix socket (0600); frame newline-delimited `{op,request}` JSON; dispatch `decide`/`ping`; structured errors; routes `decide` through the selected `Decider` | Decider seam |
 | policy-engine binary | Engine.Decide | `policy.go` | The v0 AuthZEN evaluator (in-memory allowlist) + obligation emission — one implementation of the adapter seam | — |
 | policy-engine binary | OPAEngine.Decide | `opa.go`, `policy.rego` | The OPA/Rego AuthZEN evaluator: marshals the request into a Rego input, evaluates the embedded `policy.rego`, translates the result back to AuthZEN — the second seam implementation (ADR-002). Fail-closed on any eval error/undefined result | `github.com/open-policy-agent/opa/rego` |
 
@@ -62,9 +63,11 @@ decision that the agent runtime honors. The integration is the obligation contra
 
 - **Out-of-process authorization** — the agent reaches the engine only via the IPC server; no
   in-process agent decide path. ([ADR-001](../architecture/decisions/001-foundational-stack.md) §1)
-- **AuthZEN adapter seam** — `Decide(request) -> response` is engine-agnostic; evaluators swap
-  behind it. Two implementations exist: the v0 in-memory `Engine` and the OPA/Rego `OPAEngine`
-  (ADR-001 §3, ADR-002). No `rego.*`/`ast.*` type crosses the seam.
+- **AuthZEN adapter seam** — the `Decider` interface (`Decide(map[string]any) map[string]any`,
+  `decider.go`) is engine-agnostic; evaluators swap behind it and are selected at the binary boundary
+  via `--evaluator` (`selectDecider`). Two implementations exist: the v0 in-memory `Engine` and the
+  OPA/Rego `OPAEngine` (ADR-001 §3, ADR-002). No `rego.*`/`ast.*` type crosses the seam. Selecting
+  `opa` when OPA cannot init fails closed — never a silent allowlist fallback.
 - **Fail-closed** — every non-allow path resolves to deny / structured error. (ADR-001 §7)
 - **Raise-only obligations** — `vault_injection_floor` tightens, never loosens. (ADR-001 §5)
 
