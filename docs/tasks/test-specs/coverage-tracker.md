@@ -16,6 +16,7 @@
 | 002 | Dynamic risk scoring behind the AuthZEN seam | `002-dynamic-risk-scoring-test-spec.md` | spec written | pending | — (planned; L5=`go build ./... && go test ./...`, L6=`decide` low-risk→`tier_select=bubblewrap` & high-risk→`tier_select=firecracker`) |
 | 003 | require_approval workflow (threshold-based escalation) | `003-require-approval-workflow-test-spec.md` | spec written | pending | — (planned; L5=`go build ./... && go test ./...`, L6=`decide` above-threshold→`require_approval` with escalation payload + observed exit code) |
 | 004 | Decision caching + rate limiting | `004-decision-cache-rate-limit-test-spec.md` | spec written | pending | — (planned; L5=`go build ./... && go test ./...` cache+rate-limit unit tests, L6=live IPC cache hit + `rate_limited` retryable error) |
+| 005 | Wire evaluator selection into the binary (`--evaluator allowlist\|opa`) | `005-evaluator-selection-binary-test-spec.md` | TC-001…TC-009 | pending | — (planned; L5=`go build ./... && go test ./...`, L6-via-binary=`decide --evaluator opa` allow+obligations (exit 0) & deny (exit 1), `serve --evaluator opa` socket round-trip OPA-backed allow/deny, fail-closed refusal on OPA init failure) |
 
 ## Status key
 
