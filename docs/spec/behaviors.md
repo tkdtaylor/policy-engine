@@ -40,14 +40,28 @@ points* ([interfaces.md](interfaces.md)).
 ### B-003: Emit obligations on allow
 
 - **Trigger:** any allow decision (B-001).
-- **Response:** the allow response's `context.obligations` carries: `tier_select` = `bubblewrap`
-  (exec-sandbox isolation tier), `vault_injection_floor` = `proxy` (raises vault's floor),
-  `audit_emit` = `true` (emit a decision trace). The OPA/Rego evaluator emits the same three
-  obligations byte-for-byte as the in-memory evaluator.
+- **Response:** the allow response's `context.obligations` always carries `tier_select`,
+  `vault_injection_floor`, and `audit_emit`. The specific values depend on the evaluator in use:
+  - **v0 in-memory evaluator (`--evaluator allowlist`):** always emits `tier_select=bubblewrap`,
+    `vault_injection_floor=proxy`, `audit_emit=true` (static, frozen baseline — unchanged by
+    risk inputs).
+  - **OPA/Rego evaluator (`--evaluator opa`):** emits risk-scored obligations (task 002):
+    - `tier_select` is driven by `context.risk` (a number in `[0,1]`):
+      - `risk < 0.3`, or missing / non-numeric / out-of-range → `bubblewrap` (baseline)
+      - `0.3 <= risk <= 0.7` → `gvisor`
+      - `risk > 0.7` → `firecracker`
+    - `vault_injection_floor` baseline is `env`; raised to `proxy` when
+      `injection-suspected` is present in `context.memory_flags`. The emitted floor is
+      `max(baseline="env", flag-implied)` — **raise-only**: a flag never lowers an already-higher
+      floor, and the ordering is `env < proxy`.
+    - `audit_emit` is always `true`.
 - **Side effects:** the obligations are a contract the agent runtime honors before/while
   executing — they are not actions policy-engine performs directly.
-- **Failure modes:** `vault_injection_floor` is **raise-only** — it may move the floor from `env`
-  to `proxy`, never the reverse. A deny carries no obligations.
+- **Failure modes:** `vault_injection_floor` is **raise-only** across both evaluators — it may
+  move the floor from `env` to `proxy`, never the reverse. A deny carries no obligations.
+  For the OPA evaluator, an invalid or missing `context.risk` degrades to the baseline tier
+  (`bubblewrap`) and is still an allow if the host is allowlisted (not a hard deny). A
+  structurally malformed request (unresolvable host) is a hard `deny`.
 
 ### B-004: Serve decisions over a Unix-socket IPC server
 

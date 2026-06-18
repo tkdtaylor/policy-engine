@@ -72,10 +72,7 @@ func (e *OPAEngine) Decide(req map[string]any) map[string]any {
 		return denyResponse(host)
 	}
 
-	input := map[string]any{
-		"host":      host,
-		"allowlist": e.allowlist,
-	}
+	input := buildRegoInput(req, host, e.allowlist)
 
 	rs, err := e.prepared.Eval(context.Background(), rego.EvalInput(input))
 	if err != nil {
@@ -94,6 +91,45 @@ func (e *OPAEngine) Decide(req map[string]any) map[string]any {
 	}
 
 	return translateResult(result, host)
+}
+
+// buildRegoInput constructs the Rego input map from the AuthZEN request. It carries:
+//   - host:         the resolved target host (resource.id or resource.properties.host)
+//   - allowlist:    the engine's configured net allowlist
+//   - risk:         context.risk (passed through as-is; Rego validates type + range)
+//   - memory_flags: context.memory_flags as []any (empty slice when absent)
+//
+// No AuthZEN field is translated here beyond what the policy needs — the translation boundary
+// is this function, and nothing rego.*-typed ever leaves it.
+func buildRegoInput(req map[string]any, host string, allowlist map[string]bool) map[string]any {
+	ctx, _ := req["context"].(map[string]any)
+
+	// Pass risk through as-is. OPA receives it as a JSON number or null (when absent/wrong type).
+	// The Rego policy validates is_number + range; invalid values degrade to the baseline tier.
+	var risk any
+	if ctx != nil {
+		risk = ctx["risk"] // nil when absent; OPA receives null
+	}
+
+	// Normalise memory_flags to []any so Rego sees a consistent array type.
+	// If the field is absent or the wrong type, an empty slice is passed — no flag fires.
+	var memoryFlags []any
+	if ctx != nil {
+		if raw, ok := ctx["memory_flags"].([]any); ok {
+			memoryFlags = raw
+		} else {
+			memoryFlags = []any{}
+		}
+	} else {
+		memoryFlags = []any{}
+	}
+
+	return map[string]any{
+		"host":         host,
+		"allowlist":    allowlist,
+		"risk":         risk,
+		"memory_flags": memoryFlags,
+	}
 }
 
 // resolveHost extracts the target host from the AuthZEN request: resource.id, falling back to

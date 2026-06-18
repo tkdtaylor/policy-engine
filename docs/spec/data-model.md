@@ -39,8 +39,8 @@ Each `decide` is evaluated from the request plus the in-memory allowlist; nothin
 
 - **Producer:** the agent (over IPC) or the operator (CLI / stdin).
 - **Consumer:** `Engine.Decide`.
-- **Schema** (object; v0 reads `resource.id` / `resource.properties.host` and ignores the rest,
-  but the full shape is the contract):
+- **Schema** (object; the OPA evaluator reads `resource.id`/`resource.properties.host`,
+  `context.risk`, and `context.memory_flags`; the full shape is the contract):
 
 ```
 subject  : { type, id, properties? }          # who is acting (e.g. {type:"agent", id:"cli"})
@@ -49,6 +49,33 @@ resource : { type, id, properties? }           # target; host = resource.id or p
 context  : { risk: 0..1, memory_flags?:[], request_id? }
 ```
 
+**`context.risk`** — a JSON number in `[0, 1]` representing the estimated risk level of the
+action. The OPA/Rego evaluator maps this to the `tier_select` obligation via three bands
+(lower-edge-inclusive for the higher tier):
+
+| `context.risk` band | `tier_select` value |
+|---------------------|---------------------|
+| `risk < 0.3` | `bubblewrap` (baseline) |
+| `0.3 <= risk <= 0.7` | `gvisor` |
+| `risk > 0.7` | `firecracker` |
+
+Missing, non-numeric, or out-of-range (`< 0` or `> 1`) values degrade to the baseline tier
+(`bubblewrap`) — never an over-grant to a higher tier and never a hard deny. The v0 in-memory
+evaluator ignores `context.risk` and always emits `tier_select=bubblewrap`.
+
+**`context.memory_flags`** — an optional JSON array of string flags signaling memory-state risk.
+The OPA/Rego evaluator recognizes the following canonical flag:
+
+| Flag | Effect |
+|------|--------|
+| `injection-suspected` | Raises `vault_injection_floor` from `env` to `proxy` |
+
+The emitted `vault_injection_floor` is `max(baseline="env", flag-implied)` under the ordering
+`env < proxy`. **Raise-only invariant:** a flag never lowers an already-higher floor; the
+evaluator emits the maximum, never the minimum. Absent or empty `memory_flags` leaves the
+baseline floor (`env`) unchanged. The v0 in-memory evaluator ignores `memory_flags` and always
+emits `vault_injection_floor=proxy`.
+
 - **Versioning:** v1 contract (mirrors `interface-contracts.md §2`). Engine-agnostic by design.
 - **Example:**
 
@@ -56,7 +83,7 @@ context  : { risk: 0..1, memory_flags?:[], request_id? }
 { "subject":  {"type":"agent","id":"cli"},
   "action":   {"name":"net"},
   "resource": {"type":"host","id":"api.example.com"},
-  "context":  {"risk":0.2} }
+  "context":  {"risk":0.5,"memory_flags":["injection-suspected"]} }
 ```
 
 ### Format: AuthZEN response (`decide` output)
@@ -117,8 +144,12 @@ The closed set carried in an allow response's `context.obligations`:
 | `require_approval` | (presence) | agent must pause and escalate | — |
 | `audit_emit` | `true` | emit a full decision trace | — |
 
-v0 emits `tier_select=bubblewrap`, `vault_injection_floor=proxy`, `audit_emit=true` on allow.
-`require_approval` is part of the contract but not yet emitted by the v0 evaluator.
+The v0 in-memory evaluator (`--evaluator allowlist`) always emits `tier_select=bubblewrap`,
+`vault_injection_floor=proxy`, `audit_emit=true` on allow (static baseline, unchanged by risk
+inputs). The OPA/Rego evaluator (`--evaluator opa`) emits risk-scored values: `tier_select`
+driven by `context.risk` (see bands above), `vault_injection_floor` driven by `context.memory_flags`
+with `env` as the baseline (raised to `proxy` by `injection-suspected`), `audit_emit=true`.
+`require_approval` is part of the contract but not yet emitted by either evaluator.
 
 ---
 
@@ -128,7 +159,9 @@ v0 emits `tier_select=bubblewrap`, `vault_injection_floor=proxy`, `audit_emit=tr
   `policy.go`). No other string is ever returned in `decision`.
 - **A deny response has an empty `obligations` array.**
 - **`vault_injection_floor` only ever moves the floor up** (`env`→`proxy`), enforced by the
-  evaluator never emitting a lower floor than the credential's configured one.
+  evaluator emitting `max(baseline, flag-implied)` under the ordering `env < proxy` — never the
+  minimum. For the v0 evaluator the floor is always `proxy`; for the OPA evaluator the baseline
+  is `env` and `injection-suspected` raises it to `proxy`.
 - **No engine-specific type** (Rego AST, Cedar entity, etc.) appears anywhere in the request or
   response — the seam is JSON-shaped AuthZEN only.
 

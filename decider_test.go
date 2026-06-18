@@ -119,7 +119,9 @@ func TestSelectDeciderOPASelectsOPAEngine(t *testing.T) {
 		t.Fatalf("OPA allow expected, got %v", allow["decision"])
 	}
 	obs := allow["context"].(map[string]any)["obligations"].([]map[string]any)
-	want := map[string]any{"vault_injection_floor": "proxy", "tier_select": "bubblewrap", "audit_emit": true}
+	// deciderReq uses risk=0.2 (< 0.3 → bubblewrap) and no memory_flags (floor stays at OPA
+	// baseline "env"). As of task 002, OPA is risk-scored and deliberately diverges from v0.
+	want := map[string]any{"vault_injection_floor": "env", "tier_select": "bubblewrap", "audit_emit": true}
 	seen := map[string]any{}
 	for _, o := range obs {
 		seen[o["type"].(string)] = o["value"]
