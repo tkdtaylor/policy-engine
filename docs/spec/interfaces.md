@@ -29,6 +29,8 @@ Subcommands:
 | `serve --socket` | string | — (required) | Unix socket path to bind; missing → usage error |
 | `serve --allow` | string (CSV) | `""` | Comma-separated net allowlist |
 | `serve --evaluator` | string (`allowlist`\|`opa`) | `allowlist` | Evaluator backend behind the seam; init failure / unknown value → refuse to start (exit `1`) |
+| `serve --cache-ttl` | duration | `5s` | Decision-cache TTL on the IPC `decide` path (security bound on staleness); `0` disables caching |
+| `serve --rate-limit` | float (decisions/sec) | `100` | Token-bucket rate limit on the IPC `decide` op; over-limit → `rate_limited` retryable error (never an allow) |
 | `decide` | subcommand | — | One-shot decision; exits non-zero on a non-allow decision |
 | `decide --allow` | string (CSV) | `""` | Comma-separated net allowlist |
 | `decide --host` | string | `""` | Target host shortcut; builds a default AuthZEN request. If empty, a full AuthZEN request is read from stdin |
@@ -46,12 +48,18 @@ The agent surface. Newline-delimited JSON over the Unix socket bound by `serve -
 
 | Op | Request | Response |
 |----|---------|----------|
-| `decide` | `{"op":"decide","request":{…AuthZEN request…}}` | AuthZEN response (`{decision, context:{reason, obligations}}`) |
-| `ping` | `{"op":"ping"}` | `{"ok":true}` |
-| *(other / malformed)* | any unparseable / unknown | `{"error":{"code","message","retryable":false}}` |
+| `decide` | `{"op":"decide","request":{…AuthZEN request…}}` | AuthZEN response (`{decision, context:{reason, obligations}}`); served from cache when an unexpired identical request exists (byte-identical) |
+| `decide` (over rate limit) | as above, beyond `--rate-limit` decisions/sec | `{"error":{"code":"rate_limited","message":…,"retryable":true}}` — never an allow |
+| `ping` | `{"op":"ping"}` | `{"ok":true}` (not rate-limited, not cached) |
+| *(other / malformed)* | any unparseable / unknown | `{"error":{"code","message","retryable":false}}` (`bad_request` / `unknown_op`) |
 
 - One request object per connection (read up to the first `\n`); the connection closes after the response.
 - Socket permissions are `0600` (owner-only) — part of the out-of-process access contract.
+- **Error codes:** `bad_request` and `unknown_op` are `retryable:false`; `rate_limited` is
+  `retryable:true` (a documented extension of the stable error shape — the shape is unchanged, only
+  a new `code` and the `retryable` value differ). The decision cache and rate limiter apply only on
+  the `serve` path and add **no** field to the AuthZEN request/response — the only contract change
+  is this one new error code.
 
 ### stdin (decide)
 

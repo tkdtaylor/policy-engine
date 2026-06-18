@@ -92,14 +92,55 @@ points* ([interfaces.md](interfaces.md)).
 
 ### B-004: Serve decisions over a Unix-socket IPC server
 
-- **Trigger:** `policy-engine serve --socket <path> --allow <hosts> [--evaluator allowlist|opa]`.
-- **Response:** selects the evaluator behind the seam (B-007), binds a Unix socket at `<path>`
+- **Trigger:** `policy-engine serve --socket <path> --allow <hosts> [--evaluator allowlist|opa]
+  [--cache-ttl <dur>] [--rate-limit <n/sec>]`.
+- **Response:** selects the evaluator behind the seam (B-007), fronts it with the decision cache
+  (B-009) and gates the decide op with the rate limiter (B-010), binds a Unix socket at `<path>`
   (removing any stale socket first), `chmod 0600`, and accepts connections. Each connection sends
-  one newline-delimited JSON object; supported ops are `decide` (→ B-001/B-002, routed through the
-  selected evaluator) and `ping` (→ `{ok:true}`). Logs the listen address and evaluator to stderr.
+  one newline-delimited JSON object; supported ops are `decide` (→ rate limited (B-010), then served
+  from cache or routed through the selected evaluator (B-009) → B-001/B-002) and `ping`
+  (→ `{ok:true}`, not rate-limited, not cached). Logs the listen address, evaluator, cache TTL, and
+  rate limit to stderr.
 - **Side effects:** creates the socket file; spawns a goroutine per connection.
 - **Failure modes:** missing `--socket` exits with usage error (`2`). A bind failure exits `1`. An
   evaluator that cannot initialize (B-007) → refuses to start, exits `1`, socket never bound.
+
+### B-009: Cache identical decisions on the serve path (short TTL, fail-closed)
+
+- **Trigger:** an IPC `decide` request on the `serve` path (cache is `serve`-only; the one-shot CLI
+  `decide` is never cached — one decision per process). The cache fronts the selected evaluator.
+- **Response:** if an **unexpired** entry exists for the request's canonical key, the cached
+  decision is replayed **byte-identically** (same `decision`, same obligations) without re-invoking
+  the evaluator. Otherwise the evaluator is invoked and the whole decision is cached for the TTL.
+  - **Cache key** is the canonical serialization of the **full** AuthZEN request — `subject`,
+    `action`, `resource`, **and `context`** (`risk`, `memory_flags`). Key-order-insensitive (map
+    keys are sorted). Two requests differing in any field (including `context.risk` or
+    `memory_flags`) are distinct keys and never collide.
+  - **TTL** defaults to **5s**, configurable via `--cache-ttl`; it bounds how long a cached `allow`
+    may outlive a policy change. An expired entry is recomputed, never served. `--cache-ttl 0`
+    disables caching (every request is evaluated fresh).
+- **Side effects:** an in-process, per-process cache (`map` guarded by a mutex); no persistence.
+- **Failure modes (fail-closed):** the cache is **never an allow path** — a hit replays exactly
+  what the evaluator returned (a cached `deny`/`require_approval` replays as-is; the cache never
+  upgrades a non-allow to `allow`). A request that cannot be canonically serialized bypasses the
+  cache and is evaluated directly (still fail-closed); nothing is cached. A cache miss-that-errors
+  resolves to the evaluator's `deny`, never an `allow`.
+
+### B-010: Rate-limit the IPC decide path (reject-not-allow)
+
+- **Trigger:** an IPC `decide` request on the `serve` path. A global token-bucket limiter
+  (default **100 decisions/sec**, configurable via `--rate-limit`; burst capacity = the rate) is
+  consulted **before** evaluation. `ping` is not rate-limited.
+- **Response:** under the limit, the request proceeds to the cache/evaluator (B-009) and decides
+  normally. Over the limit, the server returns the stable error shape extended with one new code:
+  `{error:{code:"rate_limited", message:<non-empty>, retryable:true}}` — `retryable:true`
+  distinguishes it from the v0 `bad_request`/`unknown_op` errors (`retryable:false`).
+- **Side effects:** none beyond consuming a token; the connection closes after the response.
+- **Failure modes (fail-closed):** a rejection is **never an allow** — even an allowlisted host
+  that would otherwise be allowed receives the `rate_limited` error when over the limit, because the
+  rejection happens **before** evaluation. The limiter has no fail-open path: a non-positive
+  configured rate rejects everything rather than falling open to unlimited. The caller treats a
+  `rate_limited` error as a non-allow (fail-closed) and may retry after backing off.
 
 ### B-005: One-shot CLI decision
 
@@ -134,11 +175,14 @@ points* ([interfaces.md](interfaces.md)).
 
 - **Trigger:** an IPC connection sends unparseable JSON, an unknown `op`, or a `decide` op missing
   the `request` field.
-- **Response:** returns a structured error `{error:{code,message,retryable:false}}` — `bad_request`
-  for parse / missing-request failures, `unknown_op` for an unsupported op.
+- **Response:** returns a structured error `{error:{code,message,retryable}}` — `bad_request`
+  (`retryable:false`) for parse / missing-request failures, `unknown_op` (`retryable:false`) for an
+  unsupported op, and `rate_limited` (`retryable:true`, B-010) when the decide rate limit is
+  exceeded. `retryable` is the only field that varies across codes.
 - **Side effects:** none; the connection is closed after the single response.
-- **Failure modes:** the caller must treat any `error` response as a non-allow (fail-closed); the
-  engine never returns an allow for a malformed request.
+- **Failure modes:** the caller must treat any `error` response as a non-allow (fail-closed) —
+  including a `retryable:true` `rate_limited` error; the engine never returns an allow for a
+  malformed, unsupported, or rate-limited request.
 
 ---
 
@@ -159,3 +203,10 @@ points* ([interfaces.md](interfaces.md)).
 - **No silent evaluator downgrade.** When `--evaluator opa` is requested but OPA cannot initialize,
   the binary fails closed (refuse to start / non-zero exit) — it never falls back to the allowlist.
   A selected-but-broken stricter evaluator must never be silently replaced by a weaker one.
+- **The decision cache is never an allow path (B-009).** A hit replays exactly what the evaluator
+  returned; the cache never upgrades a non-allow to `allow`, and an expired entry is recomputed.
+  The key is the full canonical request (including `context`), so a high-risk request can never be
+  served a low-risk cached `allow`.
+- **The rate limiter never falls open (B-010).** An over-limit `decide` is rejected with the
+  `rate_limited` error **before** evaluation — never an `allow`, even for an allowlisted host. The
+  limiter has no error-to-allow path.

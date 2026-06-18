@@ -31,6 +31,35 @@ Each `decide` is evaluated from the request plus the in-memory allowlist; nothin
   lock or copy-on-write becomes required — flag it then.)
 - **Bounds:** bounded by the size of `--allow`.
 
+### State: decision cache (`cachingDecider.entries`)
+
+- **Shape:** `map[string]entry` where the key is the canonical JSON serialization of the **full**
+  AuthZEN request (`subject`/`action`/`resource`/`context`, map keys sorted → order-insensitive) and
+  `entry = { value: map[string]any (the AuthZEN response), expiresAt: time }`.
+- **Owner:** the `cachingDecider` (`cache.go`) that wraps the selected evaluator; **`serve` path
+  only** — the one-shot CLI `decide` is not cached. One per server process, built at startup.
+- **Lifetime:** process lifetime; entries expire after the TTL (`--cache-ttl`, default `5s`). An
+  expired entry is recomputed on next access, never served (TTL bounds staleness — a security
+  property, not just performance).
+- **Concurrency rules:** mutated by every `decide` (insert on miss); guarded by a `sync.Mutex` —
+  safe under the per-connection goroutines in `serve`.
+- **Invariant:** the cache is **decision-preserving and never an allow path** — a hit replays the
+  exact AuthZEN response (no engine/cache-internal type leaks), and the cache never upgrades a
+  `deny`/`require_approval` to `allow`. Including `context` in the key prevents a high-risk request
+  from colliding with a low-risk cached `allow`.
+
+### State: rate limiter (`tokenBucket`)
+
+- **Shape:** a token bucket — `{ capacity, tokens, refillRate (tokens/sec), lastRefill: time }`.
+- **Owner:** the IPC `serve` path; one global bucket per server process (no per-subject buckets in
+  v1). Capacity = the configured `--rate-limit` (default `100`); starts full.
+- **Lifetime:** process lifetime; tokens refill continuously at the configured rate.
+- **Concurrency rules:** `Allow()` is guarded by a `sync.Mutex`; safe under concurrent decide
+  goroutines.
+- **Invariant:** **reject-not-allow** — `Allow()` returning `false` causes the server to reject with
+  the `rate_limited` error before evaluation; there is no error-to-allow path. A non-positive
+  configured rate rejects everything (fail-closed), never falls open to unlimited.
+
 ---
 
 ## Wire / interchange formats
@@ -167,8 +196,17 @@ required_to_proceed : string   # what would unblock (currently "operator approva
 { "error": { "code": string, "message": string, "retryable": bool } }
 ```
 
-Codes observed in v0: `bad_request` (unparseable JSON or missing `request`), `unknown_op`
-(unsupported op). `retryable` is `false` for both.
+Codes: `bad_request` (unparseable JSON or missing `request`) and `unknown_op` (unsupported op),
+both `retryable:false`; and `rate_limited` (the IPC `decide` rate limit was exceeded on the `serve`
+path), `retryable:true`. The shape is unchanged across all three — only the `code` and the
+`retryable` value differ. `retryable:true` signals the caller may retry after backing off; it is
+still a non-allow the caller treats as fail-closed.
+
+| `code` | `retryable` | Trigger |
+|--------|-------------|---------|
+| `bad_request` | `false` | unparseable JSON, or `decide` missing the `request` field |
+| `unknown_op` | `false` | an unsupported IPC op |
+| `rate_limited` | `true` | the `serve` IPC `decide` rate limit (`--rate-limit`) was exceeded — rejected before evaluation, never an allow |
 
 ---
 

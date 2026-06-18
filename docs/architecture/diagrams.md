@@ -1,6 +1,6 @@
 # Architecture Diagrams — policy-engine
 
-**Last updated:** 2026-06-18 (task 005 — evaluator selectable at the `Decider` seam via `--evaluator`)
+**Last updated:** 2026-06-18 (task 004 — decision cache + rate limiter on the `serve` decide path, ADR-004)
 
 C4-structured Mermaid diagrams plus the primary runtime sequence. See
 [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced
@@ -54,9 +54,11 @@ C4Component
     Person(operator, "Operator")
 
     Container_Boundary(boundary, "policy-engine binary") {
-        Component(main, "CLI / dispatch", "main.go", "serve & decide subcommands; flag parsing (--evaluator); selectDecider; exit codes")
+        Component(main, "CLI / dispatch", "main.go", "serve & decide subcommands; flag parsing (--evaluator, --cache-ttl, --rate-limit); selectDecider; exit codes")
         Component(seam, "Decider seam / selection", "decider.go", "Decider interface + selectDecider: maps --evaluator → engine; fail-closed on OPA init failure (no allowlist fallback)")
-        Component(ipc, "IPC server", "ipc.go", "JSON over Unix socket; frames {op,request}; dispatch decide/ping; routes decide through the selected Decider")
+        Component(ipc, "IPC server", "ipc.go", "JSON over Unix socket; frames {op,request}; rate-limits decide (reject-not-allow); dispatch decide/ping; routes decide through the (cached) Decider")
+        Component(limiter, "Rate limiter", "ratelimit.go", "token bucket on the serve decide op (ADR-004); over-limit → rate_limited retryable error BEFORE eval, never an allow")
+        Component(cache, "Decision cache", "cache.go", "cachingDecider wraps a Decider (serve only, ADR-004); canonical full-request key incl. context, short TTL; replays byte-identically, never an allow path")
         Component(engine, "Engine.Decide", "policy.go", "v0 AuthZEN evaluator (in-memory allowlist) — one Decider implementation")
         Component(opa, "OPAEngine.Decide", "opa.go + policy.rego", "OPA/Rego AuthZEN evaluator (ADR-002); marshal request→Rego input, eval embedded policy, translate result→AuthZEN")
     }
@@ -64,12 +66,16 @@ C4Component
     Rel(agent, ipc, "decide", "JSON / Unix socket")
     Rel(operator, main, "serve / decide --evaluator", "CLI")
     Rel(main, seam, "selectDecider(--evaluator)")
-    Rel(main, ipc, "starts (serve) with selected Decider")
+    Rel(main, cache, "wraps selected Decider (serve)")
+    Rel(main, ipc, "starts (serve) with cached Decider + limiter")
+    Rel(ipc, limiter, "Allow() before decide eval")
+    Rel(ipc, cache, "Decide(request) — via Decider seam (serve)")
+    Rel(cache, engine, "miss → Decide (allowlist)")
+    Rel(cache, opa, "miss → Decide (opa)")
     Rel(seam, engine, "allowlist → *Engine")
     Rel(seam, opa, "opa → *OPAEngine (if Ready)")
-    Rel(main, engine, "Decide (decide CLI, via Decider)")
-    Rel(ipc, engine, "Decide(request) — via Decider seam")
-    Rel(ipc, opa, "Decide(request) — same seam, --evaluator opa")
+    Rel(main, engine, "Decide (decide CLI, via Decider — NOT cached)")
+    Rel(main, opa, "Decide (decide CLI, via Decider — NOT cached)")
 ```
 
 **Key contracts**
@@ -90,26 +96,44 @@ sequenceDiagram
     autonumber
     participant Agent
     participant IPC as ipc.serve (Unix socket)
-    participant Engine as Engine.Decide (policy.go)
+    participant RL as Rate limiter (ratelimit.go)
+    participant Cache as cachingDecider (cache.go)
+    participant Engine as Engine/OPAEngine.Decide
 
     Agent->>IPC: {"op":"decide","request":{subject,action,resource,context}}
     IPC->>IPC: parse newline-delimited JSON
     alt malformed / missing request
         IPC-->>Agent: {"error":{code,message,retryable:false}}
-    else valid request
-        IPC->>Engine: Decide(request)
-        Engine->>Engine: resolve host = resource.id (or properties.host)
-        alt host in allowlist
-            Engine-->>IPC: {decision:"allow", context:{reason, obligations:[tier_select, vault_injection_floor→proxy, audit_emit]}}
-            IPC-->>Agent: allow + obligations
-            Note over Agent: agent runtime honors obligations,<br/>then invokes exec-sandbox
-        else host not in allowlist (fail-closed default)
-            Engine-->>IPC: {decision:"deny", context:{reason, obligations:[]}}
-            IPC-->>Agent: deny
-            Note over Agent: exec-sandbox is never invoked
+    else over rate limit (serve path)
+        IPC->>RL: Allow()
+        RL-->>IPC: false (no token)
+        IPC-->>Agent: {"error":{code:"rate_limited",message,retryable:true}}
+        Note over Agent: rejected BEFORE eval — never an allow (fail-closed)
+    else valid request, under limit
+        IPC->>RL: Allow()
+        RL-->>IPC: true (token consumed)
+        IPC->>Cache: Decide(request) — via Decider seam (serve)
+        alt unexpired entry for canonical full-request key (incl. context)
+            Cache-->>IPC: cached decision (byte-identical; never upgraded to allow)
+        else miss / expired
+            Cache->>Engine: Decide(request)
+            Engine->>Engine: resolve host = resource.id (or properties.host)
+            alt host in allowlist
+                Engine-->>Cache: {decision:"allow", context:{reason, obligations:[tier_select, vault_injection_floor, audit_emit]}}
+            else host not in allowlist (fail-closed default)
+                Engine-->>Cache: {decision:"deny", context:{reason, obligations:[]}}
+            end
+            Cache->>Cache: store decision until now+TTL
+            Cache-->>IPC: decision
         end
+        IPC-->>Agent: decision (+ obligations on allow)
+        Note over Agent: on allow, honor obligations then invoke exec-sandbox;<br/>on deny, exec-sandbox is never invoked
     end
 ```
+
+The one-shot CLI `decide` path is **not** rate-limited and **not** cached — it makes a single
+decision per process and calls the selected `Decider` directly (cache + limiter are `serve`-only,
+ADR-004).
 
 ADRs governing this flow: [ADR-001](decisions/001-foundational-stack.md) (out-of-process,
 AuthZEN seam, obligation model, fail-closed) and [ADR-002](decisions/002-opa-rego-embedded-library.md)
