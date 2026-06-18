@@ -1,3 +1,6 @@
 /bin/
 *.sock
 /policy-engine
+.claude/sessions/
+.claude/worktrees/
+.claude/.last-checkpoint
