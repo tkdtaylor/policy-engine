@@ -41,7 +41,7 @@ func cmdServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	socket := fs.String("socket", "", "unix socket path (required)")
 	allow := fs.String("allow", "", "comma-separated net allowlist")
-	evaluator := fs.String("evaluator", EvaluatorAllowlist, "evaluator backend: allowlist|opa")
+	evaluator := fs.String("evaluator", EvaluatorAllowlist, "evaluator backend: allowlist|opa|cedar")
 	cacheTTL := fs.Duration("cache-ttl", 5*time.Second, "decision cache TTL (security bound on staleness); 0 disables caching")
 	rateLimit := fs.Float64("rate-limit", 100, "max decisions/sec on the IPC decide path; over-limit returns a rate_limited error (never an allow)")
 	fs.Parse(args)
@@ -74,7 +74,7 @@ func cmdDecide(args []string) {
 	fs := flag.NewFlagSet("decide", flag.ExitOnError)
 	allow := fs.String("allow", "", "comma-separated net allowlist")
 	host := fs.String("host", "", "target host (shortcut; or pipe a full AuthZEN request on stdin)")
-	evaluator := fs.String("evaluator", EvaluatorAllowlist, "evaluator backend: allowlist|opa")
+	evaluator := fs.String("evaluator", EvaluatorAllowlist, "evaluator backend: allowlist|opa|cedar")
 	fs.Parse(args)
 	// Fail-closed: an unknown evaluator or an OPA engine that did not initialize errors out
 	// (non-zero exit) — the one-shot decide does NOT silently fall back to the allowlist.

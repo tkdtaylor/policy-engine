@@ -224,7 +224,8 @@ func selectDeciderFrom(e *OPAEngine) (Decider, error) {
 // TC-007: unknown --evaluator value is rejected with a clear error naming the accepted values; no
 // Decider is returned.
 func TestSelectDeciderUnknownEvaluatorRejected(t *testing.T) {
-	for _, bad := range []string{"cedar", "openfga", "", "OPA", "Allowlist"} {
+	// Note: "cedar" became a VALID evaluator in task 006 — it is no longer in this bad set.
+	for _, bad := range []string{"openfga", "", "OPA", "Allowlist", "Cedar", "CEDAR"} {
 		d, err := selectDecider(bad, "api.example.com")
 		if err == nil {
 			t.Fatalf("evaluator %q should be rejected, got Decider %T", bad, d)
