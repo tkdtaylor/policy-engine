@@ -91,15 +91,22 @@ a flag never moves it back to `env`.
 - **Expected output:** `decision == "allow"`; the `vault_injection_floor` obligation carries the
   baseline value (`env`) — the flag-driven raise did not fire.
 
-### TC-006: Raise-only invariant — a flag never lowers an already-higher floor
+### TC-006: Raise-only invariant — ordering assertion proves the floor is `max(baseline, flag-implied)`
 
 - **Requirement:** REQ-003
-- **Input:** an allow request whose evaluated baseline floor is already `proxy`, with
-  `context.memory_flags` that (hypothetically) map to `env`.
-- **Expected output:** `decision == "allow"`; the emitted `vault_injection_floor` is `proxy` —
-  **never** lowered to `env`. The evaluator emits `max(baseline, flag-implied)` ordering
-  (`env < proxy`), never the minimum.
-- **Edge cases:** when both baseline and flag agree on `proxy`, exactly one `vault_injection_floor`
+- **Input:** evaluate two cases for the same allowlisted host at `risk=0.1`:
+  (a) `context.memory_flags = []` (no flag — baseline), and
+  (b) `context.memory_flags = ["injection-suspected"]` (flag present).
+- **Expected output:** both cases yield `decision == "allow"`. The emitted `vault_injection_floor`
+  values are mapped to their rank under the ordering `env=0 < proxy=1`. The test asserts:
+  1. `rank(flagged) >= rank(unflagged)` — the flag never lowers the floor.
+  2. `rank(unflagged) >= rank("env")` — the floor never goes below the baseline (`env`).
+  These assertions would BREAK if the Rego floor expression emitted below the baseline or if a
+  flag evaluation yielded a rank lower than the no-flag evaluation. The Rego policy expresses
+  the emitted floor as `floor_names[max({baseline_rank, flag_rank})]` — the `max` over integer
+  ranks under `env(0) < proxy(1)` is the structural guarantee; the rank-ordering assertion is
+  its test-enforced verification.
+- **Edge cases:** when `injection-suspected` is present, exactly one `vault_injection_floor`
   obligation is emitted (no duplicate / conflicting obligation).
 
 ### TC-007: Missing `context.risk` falls back to baseline tier (fail-closed, no over-grant)

@@ -47,7 +47,10 @@ func obligationValue(t *testing.T, out map[string]any, typ string) (any, bool) {
 //   TC-006 -> TestOPAIntegrationRealEvaluation
 //   TC-007 -> TestOPAMatchesV0EngineByteForByte
 
-// TC-001: OPA-backed evaluator reproduces allow for an allowlisted host, with v0 obligations.
+// TC-001: OPA-backed evaluator allows an allowlisted host and emits risk-scored obligations.
+// With risk=0.2 (< 0.3 band) and no memory_flags, the OPA evaluator emits tier_select=bubblewrap
+// and vault_injection_floor=env (OPA baseline; no flag to raise it). This diverges from the v0
+// Engine (which always emits proxy) — by design, as of task 002.
 func TestOPAAllowlistedHostIsAllowedWithObligations(t *testing.T) {
 	e := NewOPAEngine("api.example.com")
 	if !e.Ready() {
@@ -57,10 +60,12 @@ func TestOPAAllowlistedHostIsAllowedWithObligations(t *testing.T) {
 	if out["decision"] != Allow {
 		t.Fatalf("expected allow, got %v", out["decision"])
 	}
+	// OPA baseline floor is "env" when no memory_flags are set (task 002 behavior).
 	floor, ok := obligationValue(t, out, "vault_injection_floor")
-	if !ok || floor != "proxy" {
-		t.Fatalf("expected vault_injection_floor=proxy, got %v (present=%v)", floor, ok)
+	if !ok || floor != "env" {
+		t.Fatalf("expected vault_injection_floor=env (OPA baseline, no flags), got %v (present=%v)", floor, ok)
 	}
+	// risk=0.2 < 0.3 → bubblewrap tier.
 	tier, ok := obligationValue(t, out, "tier_select")
 	if !ok || tier != "bubblewrap" {
 		t.Fatalf("expected tier_select=bubblewrap, got %v (present=%v)", tier, ok)
@@ -222,20 +227,38 @@ func TestOPAIntegrationRealEvaluation(t *testing.T) {
 	}
 }
 
-// TC-007: the Rego policy reproduces the v0 net-allowlist decision + obligations byte-for-byte —
-// for the same inputs, the OPA-backed engine and the v0 Engine produce identical responses.
-func TestOPAMatchesV0EngineByteForByte(t *testing.T) {
+// TC-007: OPA and v0 agree on the deny path; on allow, OPA emits risk-scored obligations while v0
+// always emits its static baseline. As of task 002, OPA and v0 deliberately diverge on allow (OPA
+// scores risk→tier and applies the env baseline floor; v0 is frozen at bubblewrap+proxy). The deny
+// path (empty obligations, decision=deny) is identical for both evaluators — that invariant is
+// verified here. The allow-path divergence is tested in the risk-scoring tests (risk_test.go).
+func TestOPAMatchesV0EngineDenyPath(t *testing.T) {
 	opa := NewOPAEngine("api.example.com")
 	if !opa.Ready() {
 		t.Skip("OPA toolchain/policy unavailable: embedded Rego query did not prepare")
 	}
 	v0 := NewEngine("api.example.com")
 
-	for _, host := range []string{"api.example.com", "evil.example.net", ""} {
+	// Deny path: both evaluators must produce identical deny responses.
+	for _, host := range []string{"evil.example.net", ""} {
 		v0Out, _ := json.Marshal(v0.Decide(opaReq(host)))
 		opaOut, _ := json.Marshal(opa.Decide(opaReq(host)))
 		if string(v0Out) != string(opaOut) {
-			t.Fatalf("host %q: OPA response != v0 response\n v0: %s\nopa: %s", host, v0Out, opaOut)
+			t.Fatalf("deny path host %q: OPA response != v0 response\n v0: %s\nopa: %s", host, v0Out, opaOut)
 		}
+	}
+
+	// Allow path: OPA and v0 both return decision=allow for an allowlisted host, but their
+	// obligation values differ by design (OPA is risk-scored; v0 is static). Verify the structure
+	// is identical (decision, context.reason present, obligations non-empty) even though values differ.
+	v0Allow := v0.Decide(opaReq("api.example.com"))
+	opaAllow := opa.Decide(opaReq("api.example.com"))
+	if v0Allow["decision"] != Allow || opaAllow["decision"] != Allow {
+		t.Fatalf("both evaluators must allow an allowlisted host: v0=%v opa=%v", v0Allow["decision"], opaAllow["decision"])
+	}
+	v0Obs, _ := v0Allow["context"].(map[string]any)["obligations"].([]map[string]any)
+	opaObs, _ := opaAllow["context"].(map[string]any)["obligations"].([]map[string]any)
+	if len(v0Obs) == 0 || len(opaObs) == 0 {
+		t.Fatalf("both evaluators must emit obligations on allow: v0=%v opa=%v", v0Obs, opaObs)
 	}
 }
