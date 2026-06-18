@@ -80,28 +80,45 @@ tier := "bubblewrap" {
 }
 
 # ---------------------------------------------------------------------------
-# vault_injection_floor: raise-only under env < proxy ordering
+# vault_injection_floor: raise-only via explicit max under env(0) < proxy(1) ordering
 # ---------------------------------------------------------------------------
 
-# "injection-suspected" flag maps to floor = "proxy".
-flag_raises_to_proxy {
+# Rank mapping: env=0, proxy=1.  Higher rank = stricter floor.
+# A future flag that maps to a lower rank can never lower the emitted floor
+# because we always emit the floor_names entry at max(baseline_rank, flag_rank).
+floor_rank("env")   := 0
+floor_rank("proxy") := 1
+
+# The OPA evaluator's baseline floor.
+baseline_floor := "env"
+baseline_floor_rank := floor_rank(baseline_floor)
+
+# injection_flag is true when "injection-suspected" appears in memory_flags.
+injection_flag {
 	some i
 	input.memory_flags[i] == "injection-suspected"
 }
 
-# The OPA evaluator's baseline floor is "env".
-# A flag raises it to "proxy"; the emitted floor is max(baseline, flag-implied):
-#   - flag present  → proxy (raised)
-#   - flag absent   → env   (baseline stays)
-# This is raise-only by construction: we only ever emit "env" or "proxy", and the
-# flag path always produces the higher value. If the caller's baseline were already
-# "proxy" (tested via TC-006), the flag_raises path still yields "proxy" — never "env".
-injection_floor := "proxy" {
-	flag_raises_to_proxy
+# "injection-suspected" flag implies floor = "proxy" (rank 1).
+flag_floor := "proxy" {
+	injection_flag
 }
 
-injection_floor := "env" {
-	not flag_raises_to_proxy
+# Default flag floor is "env" (rank 0) — no flag, no raise.
+flag_floor := "env" {
+	not injection_flag
+}
+
+flag_floor_rank := floor_rank(flag_floor)
+
+# floor_names indexed by rank, used to resolve max rank → name.
+floor_names := {0: "env", 1: "proxy"}
+
+# The emitted floor is max(baseline_rank, flag_rank) resolved back to a name.
+# This is raise-only by construction: even if a future flag maps to rank 0 (env),
+# max(0, 0) = 0 = "env" — it never pulls a baseline already at rank 1 (proxy) down.
+injection_floor := floor_names[max_rank] {
+	max_rank := max({baseline_floor_rank, flag_floor_rank})
 }
 
 # ---------------------------------------------------------------------------

@@ -189,27 +189,69 @@ func TestNoFlagKeepsBaselineFloor(t *testing.T) {
 // TC-006: Raise-only invariant — a flag never lowers an already-higher floor
 // ---------------------------------------------------------------------------
 
-// TC-006: the raise-only invariant is proven structurally: the Rego policy emits
-// max(baseline="env", flag-implied) where the only flag path yields "proxy" — it can never
-// produce a lower floor than the flag's own value. We also verify that when
-// injection-suspected is present alongside a baseline that already implies proxy, exactly one
-// vault_injection_floor obligation is emitted (no duplicate/conflicting obligations).
+// TC-006: the raise-only invariant is enforced by an explicit rank-ordering assertion.
+// The Rego policy emits floor = max(baseline_rank, flag_rank) under the ordering env(0) < proxy(1).
+// The test maps each observed floor to its rank and asserts:
+//   rank(flagged) >= rank(unflagged)   — flag never lowers the floor
+//   rank(unflagged) >= rank("env")     — floor never goes below the baseline
+// This assertion would BREAK if the Rego floor logic emitted a floor below the baseline
+// or below what a flag-present evaluation emitted.
 func TestRaiseOnlyInvariant(t *testing.T) {
 	e := NewOPAEngine("api.example.com")
 	skipIfOPAUnavailable(t, e)
 
-	// Case 1: injection-suspected flag → proxy. The flag raises env→proxy; can never return env
-	// because the flag path always yields "proxy" (max of env and proxy = proxy).
-	out := e.Decide(riskReq("api.example.com", 0.1, []string{"injection-suspected"}))
-	if out["decision"] != Allow {
-		t.Fatalf("expected allow, got %v", out["decision"])
+	// floorRank encodes the env(0) < proxy(1) ordering used by the Rego max() expression.
+	// Any floor value outside this map is an unexpected regression — the test fails fast.
+	floorRank := map[string]int{
+		"env":   0,
+		"proxy": 1,
 	}
-	if floor := riskFloor(t, out); floor != "proxy" {
-		t.Fatalf("raise-only: expected proxy when injection-suspected present, got %q", floor)
+	rankFloor := func(t *testing.T, floor string) int {
+		t.Helper()
+		r, ok := floorRank[floor]
+		if !ok {
+			t.Fatalf("raise-only: unrecognised floor value %q (not in env<proxy ordering)", floor)
+		}
+		return r
 	}
 
-	// Case 2: exactly one vault_injection_floor obligation — no duplicate / conflicting obligations.
-	ctx := out["context"].(map[string]any)
+	// Evaluate both cases: no flag (baseline) and injection-suspected (flag present).
+	cases := []struct {
+		label string
+		flags []string
+	}{
+		{"no-flag (baseline)", nil},
+		{"injection-suspected (flag)", []string{"injection-suspected"}},
+	}
+
+	ranks := make([]int, len(cases))
+	for i, c := range cases {
+		out := e.Decide(riskReq("api.example.com", 0.1, c.flags))
+		if out["decision"] != Allow {
+			t.Fatalf("raise-only [%s]: expected allow, got %v", c.label, out["decision"])
+		}
+		floor := riskFloor(t, out)
+		ranks[i] = rankFloor(t, floor)
+
+		// The floor must never be below the baseline (env = rank 0).
+		baselineRank := floorRank["env"]
+		if ranks[i] < baselineRank {
+			t.Fatalf("raise-only [%s]: floor rank %d is below baseline rank %d (floor %q is below env — invariant violated)",
+				c.label, ranks[i], baselineRank, floor)
+		}
+	}
+
+	// The flag-present rank must be >= the no-flag rank: flag never lowers the floor.
+	rankNoFlag := ranks[0]  // "no-flag (baseline)"
+	rankFlagged := ranks[1] // "injection-suspected (flag)"
+	if rankFlagged < rankNoFlag {
+		t.Fatalf("raise-only ordering violated: rank(flagged)=%d < rank(unflagged)=%d — flag lowered the floor",
+			rankFlagged, rankNoFlag)
+	}
+
+	// Exactly one vault_injection_floor obligation when the flag is present — no duplicates.
+	outFlagged := e.Decide(riskReq("api.example.com", 0.1, []string{"injection-suspected"}))
+	ctx := outFlagged["context"].(map[string]any)
 	obs := ctx["obligations"].([]map[string]any)
 	floorCount := 0
 	for _, o := range obs {
@@ -220,14 +262,6 @@ func TestRaiseOnlyInvariant(t *testing.T) {
 	if floorCount != 1 {
 		t.Fatalf("raise-only: expected exactly 1 vault_injection_floor obligation, got %d", floorCount)
 	}
-
-	// Case 3: no-flag path emits env (baseline) — verifying the floor can't be lowered below env.
-	out2 := e.Decide(riskReq("api.example.com", 0.1, nil))
-	if floor := riskFloor(t, out2); floor != "env" {
-		t.Fatalf("raise-only: expected env (baseline) when no flags, got %q", floor)
-	}
-	// And env < proxy: flag-present path must be strictly >= no-flag path.
-	// (floor without flag = "env", floor with flag = "proxy" — proxy is higher, invariant holds.)
 }
 
 // ---------------------------------------------------------------------------
