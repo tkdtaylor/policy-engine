@@ -2,7 +2,10 @@ module github.com/tkdtaylor/policy-engine
 
 go 1.26
 
-require github.com/open-policy-agent/opa v0.70.0
+require (
+	github.com/cedar-policy/cedar-go v1.8.0
+	github.com/open-policy-agent/opa v0.70.0
+)
 
 require (
 	github.com/OneOfOne/xxhash v1.2.8 // indirect
@@ -33,6 +36,7 @@ require (
 	go.opentelemetry.io/otel/metric v1.40.0 // indirect
 	go.opentelemetry.io/otel/sdk v1.40.0 // indirect
 	go.opentelemetry.io/otel/trace v1.40.0 // indirect
+	golang.org/x/exp v0.0.0-20230905200255-921286631fa9 // indirect
 	golang.org/x/sys v0.40.0 // indirect
 	google.golang.org/protobuf v1.34.2 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect

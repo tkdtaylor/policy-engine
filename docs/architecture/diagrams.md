@@ -1,6 +1,6 @@
 # Architecture Diagrams — policy-engine
 
-**Last updated:** 2026-06-18 (task 004 — decision cache + rate limiter on the `serve` decide path, ADR-004)
+**Last updated:** 2026-06-18 (task 006 — Cedar as a third evaluator behind the Decider seam, baseline parity, ADR-005)
 
 C4-structured Mermaid diagrams plus the primary runtime sequence. See
 [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced
@@ -55,12 +55,13 @@ C4Component
 
     Container_Boundary(boundary, "policy-engine binary") {
         Component(main, "CLI / dispatch", "main.go", "serve & decide subcommands; flag parsing (--evaluator, --cache-ttl, --rate-limit); selectDecider; exit codes")
-        Component(seam, "Decider seam / selection", "decider.go", "Decider interface + selectDecider: maps --evaluator → engine; fail-closed on OPA init failure (no allowlist fallback)")
+        Component(seam, "Decider seam / selection", "decider.go", "Decider interface + selectDecider: maps --evaluator → engine; fail-closed on OPA/Cedar init failure (no allowlist fallback)")
         Component(ipc, "IPC server", "ipc.go", "JSON over Unix socket; frames {op,request}; rate-limits decide (reject-not-allow); dispatch decide/ping; routes decide through the (cached) Decider")
         Component(limiter, "Rate limiter", "ratelimit.go", "token bucket on the serve decide op (ADR-004); over-limit → rate_limited retryable error BEFORE eval, never an allow")
         Component(cache, "Decision cache", "cache.go", "cachingDecider wraps a Decider (serve only, ADR-004); canonical full-request key incl. context, short TTL; replays byte-identically, never an allow path")
         Component(engine, "Engine.Decide", "policy.go", "v0 AuthZEN evaluator (in-memory allowlist) — one Decider implementation")
         Component(opa, "OPAEngine.Decide", "opa.go + policy.rego", "OPA/Rego AuthZEN evaluator (ADR-002); marshal request→Rego input, eval embedded policy, translate result→AuthZEN")
+        Component(cedar, "CedarEngine.Decide", "cedar.go", "Cedar AuthZEN evaluator (ADR-005); authorize request vs embedded Cedar policy + allowlist entity store, translate permit/forbid→AuthZEN; baseline parity only (no risk/approval)")
     }
 
     Rel(agent, ipc, "decide", "JSON / Unix socket")
@@ -72,17 +73,21 @@ C4Component
     Rel(ipc, cache, "Decide(request) — via Decider seam (serve)")
     Rel(cache, engine, "miss → Decide (allowlist)")
     Rel(cache, opa, "miss → Decide (opa)")
+    Rel(cache, cedar, "miss → Decide (cedar)")
     Rel(seam, engine, "allowlist → *Engine")
     Rel(seam, opa, "opa → *OPAEngine (if Ready)")
+    Rel(seam, cedar, "cedar → *CedarEngine (if Ready)")
     Rel(main, engine, "Decide (decide CLI, via Decider — NOT cached)")
     Rel(main, opa, "Decide (decide CLI, via Decider — NOT cached)")
+    Rel(main, cedar, "Decide (decide CLI, via Decider — NOT cached)")
 ```
 
 **Key contracts**
-- `Decide(map[string]any) -> map[string]any` is the **AuthZEN adapter seam** (ADR-001 §3). Two
-  implementations exist behind it — the in-memory `Engine` and the OPA/Rego `OPAEngine` (ADR-002);
-  future evaluators (Cedar, OpenFGA) add another with the identical signature, without changing
-  callers. No engine-specific type (`rego.*`/`ast.*`) may appear in the argument or return value.
+- `Decide(map[string]any) -> map[string]any` is the **AuthZEN adapter seam** (ADR-001 §3). Three
+  implementations exist behind it — the in-memory `Engine`, the OPA/Rego `OPAEngine` (ADR-002), and
+  the Cedar `CedarEngine` (ADR-005, pure-Go cedar-go, baseline parity only); future evaluators
+  (OpenFGA) add another with the identical signature, without changing callers. No engine-specific
+  type (`rego.*`/`ast.*`/`cedar.*`/`types.*`) may appear in the argument or return value.
 - The agent reaches the engine **only via `ipc`** — never `main`'s in-process `decide` path
   (out-of-process invariant, ADR-001 §1).
 - `Decide` is **fail-closed**: any unmatched/unevaluable request returns `deny` (ADR-001 §7).
@@ -98,7 +103,7 @@ sequenceDiagram
     participant IPC as ipc.serve (Unix socket)
     participant RL as Rate limiter (ratelimit.go)
     participant Cache as cachingDecider (cache.go)
-    participant Engine as Engine/OPAEngine.Decide
+    participant Engine as Engine/OPAEngine/CedarEngine.Decide
 
     Agent->>IPC: {"op":"decide","request":{subject,action,resource,context}}
     IPC->>IPC: parse newline-delimited JSON
@@ -136,12 +141,15 @@ decision per process and calls the selected `Decider` directly (cache + limiter 
 ADR-004).
 
 ADRs governing this flow: [ADR-001](decisions/001-foundational-stack.md) (out-of-process,
-AuthZEN seam, obligation model, fail-closed) and [ADR-002](decisions/002-opa-rego-embedded-library.md)
-(OPA/Rego evaluator). The OPA adoption swaps only the inner evaluator (`OPAEngine.Decide` in place
-of `Engine.Decide`) — this sequence shape, the IPC framing, and the obligation set are preserved.
-The evaluator behind `Decide` is chosen at startup by `--evaluator` (`selectDecider`, task 005); the
-sequence above is identical whichever evaluator is selected, since both sit behind the `Decider`
-seam. Selecting `opa` when OPA cannot init fails closed before the socket binds (no allowlist
+AuthZEN seam, obligation model, fail-closed), [ADR-002](decisions/002-opa-rego-embedded-library.md)
+(OPA/Rego evaluator), and [ADR-005](decisions/005-cedar-alternative-evaluator.md) (Cedar evaluator,
+baseline parity). Each evaluator adoption swaps only the inner evaluator (`OPAEngine.Decide` /
+`CedarEngine.Decide` in place of `Engine.Decide`) — this sequence shape, the IPC framing, and the
+obligation set are preserved. The evaluator behind `Decide` is chosen at startup by `--evaluator`
+(`selectDecider`, task 005); the sequence above is identical whichever evaluator is selected, since
+all three sit behind the `Decider` seam. The Cedar path is byte-for-byte identical to the allowlist
+baseline (no risk/approval — that is OPA-only, the intentional asymmetry in ADR-005). Selecting
+`opa` or `cedar` when the engine cannot init fails closed before the socket binds (no allowlist
 fallback).
 
 ---

@@ -21,8 +21,10 @@ points* ([interfaces.md](interfaces.md)).
   trip (`risk < 0.9` and no `injection-suspected` flag).
 - **Response:** returns `decision: "allow"` with `context.reason` naming the matched host and
   `context.obligations` listing the obligations the caller must honor. The decision may be produced
-  by either evaluator behind the seam — the v0 in-memory allowlist or the OPA/Rego evaluator
-  (`policy.rego`, ADR-002); the observable response is identical regardless of which evaluates it.
+  by any of the three evaluators behind the seam — the v0 in-memory allowlist, the OPA/Rego
+  evaluator (`policy.rego`, ADR-002), or the Cedar evaluator (cedar-go, ADR-005); the observable
+  response shape is identical regardless of which evaluates it (obligation *values* may differ on
+  the OPA risk-scored path — see B-003).
 - **Side effects:** none performed by policy-engine itself — it emits obligations
   (`tier_select`, `vault_injection_floor`, `audit_emit`) for the agent runtime to honor. The CLI
   prints the indented JSON response; exit code `0`.
@@ -46,6 +48,11 @@ points* ([interfaces.md](interfaces.md)).
   - **v0 in-memory evaluator (`--evaluator allowlist`):** always emits `tier_select=bubblewrap`,
     `vault_injection_floor=proxy`, `audit_emit=true` (static, frozen baseline — unchanged by
     risk inputs).
+  - **Cedar evaluator (`--evaluator cedar`):** emits the **same static baseline** as the v0
+    in-memory evaluator — `tier_select=bubblewrap`, `vault_injection_floor=proxy`,
+    `audit_emit=true`, byte-for-byte identical to `--evaluator allowlist`. Cedar emits only
+    permit/forbid; the obligations are attached Go-side by the translation layer. Cedar
+    deliberately does **not** risk-score (see B-007 and the asymmetry note).
   - **OPA/Rego evaluator (`--evaluator opa`):** emits risk-scored obligations (task 002):
     - `tier_select` is driven by `context.risk` (a number in `[0,1]`):
       - `risk < 0.3`, or missing / non-numeric / out-of-range → `bubblewrap` (baseline)
@@ -92,7 +99,7 @@ points* ([interfaces.md](interfaces.md)).
 
 ### B-004: Serve decisions over a Unix-socket IPC server
 
-- **Trigger:** `policy-engine serve --socket <path> --allow <hosts> [--evaluator allowlist|opa]
+- **Trigger:** `policy-engine serve --socket <path> --allow <hosts> [--evaluator allowlist|opa|cedar]
   [--cache-ttl <dur>] [--rate-limit <n/sec>]`.
 - **Response:** selects the evaluator behind the seam (B-007), fronts it with the decision cache
   (B-009) and gates the decide op with the rate limiter (B-010), binds a Unix socket at `<path>`
@@ -144,7 +151,7 @@ points* ([interfaces.md](interfaces.md)).
 
 ### B-005: One-shot CLI decision
 
-- **Trigger:** `policy-engine decide --allow <hosts> --host <h> [--evaluator allowlist|opa]`, or
+- **Trigger:** `policy-engine decide --allow <hosts> --host <h> [--evaluator allowlist|opa|cedar]`, or
   piping a full AuthZEN request on stdin (no `--host`).
 - **Response:** selects the evaluator behind the seam (B-007), evaluates one request, and prints the
   indented JSON AuthZEN response.
@@ -156,16 +163,28 @@ points* ([interfaces.md](interfaces.md)).
 
 - **Trigger:** the `--evaluator` flag on `serve` or `decide` (default `allowlist`).
 - **Response:** maps the value to the engine behind the `Decider` seam — `allowlist` → v0 in-memory
-  `*Engine` (byte-identical to v0); `opa` → OPA/Rego `*OPAEngine`. The selected evaluator backs both
-  the one-shot `decide` and the long-running `serve`/IPC `decide` op. The AuthZEN request/response
-  contract is identical regardless of which evaluator is selected.
+  `*Engine` (byte-identical to v0); `opa` → OPA/Rego `*OPAEngine`; `cedar` → Cedar `*CedarEngine`
+  (embedded pure-Go cedar-go). The selected evaluator backs both the one-shot `decide` and the
+  long-running `serve`/IPC `decide` op. The AuthZEN request/response contract is identical
+  regardless of which evaluator is selected.
+- **Evaluator feature asymmetry (intentional, documented — ADR-005):** the three evaluators do
+  **not** all expose the same policy richness. `allowlist` and `cedar` produce the **v0 baseline
+  decision** — allow ⇔ allowlisted host with the three static obligations
+  (`tier_select=bubblewrap`, `vault_injection_floor=proxy`, `audit_emit=true`); `cedar` is
+  byte-for-byte identical to `allowlist` on both allow and deny. `opa` additionally provides
+  **risk scoring** (B-003, task 002) and **`require_approval` gating** (B-008, task 003). Cedar
+  reproducing the baseline proves the seam is engine-agnostic at baseline parity; risk/approval in
+  Cedar is deliberately deferred (Cedar emits only permit/forbid — the risk model would live
+  Go-side, a separate design question). `--evaluator cedar` = baseline; `--evaluator opa` = full.
 - **Side effects:** none beyond constructing the chosen engine (the OPA path compiles the embedded
-  `policy.rego` query once at selection).
+  `policy.rego` query once at selection; the Cedar path parses the embedded Cedar policy and builds
+  the allowlist entity store once at selection).
 - **Failure modes (fail-closed):** `--evaluator opa` when OPA cannot initialize
-  (`OPAEngine.Ready()==false`) → error, **no usable evaluator is returned, and there is NO silent
+  (`OPAEngine.Ready()==false`), or `--evaluator cedar` when Cedar cannot initialize
+  (`CedarEngine.Ready()==false`) → error, **no usable evaluator is returned, and there is NO silent
   fallback to the allowlist** (a silent downgrade is a self-grant vector). An unknown value → error
-  naming the accepted values (`allowlist`, `opa`). Both error paths surface as a non-zero exit
-  (`serve` refuses to start with the socket unbound; `decide` exits `1`).
+  naming the accepted values (`allowlist`, `opa`, `cedar`). Both error paths surface as a non-zero
+  exit (`serve` refuses to start with the socket unbound; `decide` exits `1`).
 
 ---
 
