@@ -139,7 +139,7 @@ seam is exactly the kind of cross-module boundary that stays composable.
 ## Working in this project
 
 Every task lives on its own branch (or worktree under concurrent sessions). Working directly
-on the default branch (`master`) is blocked by the `no-commit-on-main.py` hook —
+on the default branch (`main`) is blocked by the `no-commit-on-main.py` hook —
 `scripts/start-task.sh` is how you pick the right isolation.
 
 1. Start each session by reading the relevant task file (including its **Verification plan**) and its test spec
@@ -152,10 +152,10 @@ on the default branch (`master`) is blocked by the `no-commit-on-main.py` hook �
    The executor commits at status **🟡 (code merged)** on the task branch.
 5. After the executor returns, use **spec-verifier** on the task — it returns APPROVE or BLOCK based on per-assertion evidence
 6. If spec-verifier APPROVEs **and** the verification plan's L5/L6 evidence is recorded, promote the row to **✅ (verified)** in `coverage-tracker.md` in a **separate commit** titled `verify: confirm task NNN — <evidence>` (still on the task branch)
-7. **Close the task** with `scripts/finish-task.sh <NNN> <slug>` (add `--local` to merge without pushing). It merges the task branch into `master`, deletes the branch, removes the worktree, and verifies all three happened.
+7. **Close the task** with `scripts/finish-task.sh <NNN> <slug>` (add `--local` to merge without pushing). It merges the task branch into `main`, deletes the branch, removes the worktree, and verifies all three happened.
 8. **Commit after each milestone** — never start the next task without committing the current one first
 
-The separation between the task branch and `master` is the load-bearing rule for
+The separation between the task branch and `main` is the load-bearing rule for
 multi-session safety. The separation between 🟡 (feat commit) and ✅ (verify commit) is the
 load-bearing rule for verification honesty: **never** mark ✅ in the same commit as the feature work.
 
@@ -164,7 +164,7 @@ load-bearing rule for verification honesty: **never** mark ✅ in the same commi
 **Commit after every milestone.** Do not batch multiple tasks into one commit. Do not continue
 to the next task until the current one is committed.
 
-All commits below land on the **task branch** (`task/NNN-<slug>`), never on `master` directly.
+All commits below land on the **task branch** (`task/NNN-<slug>`), never on `main` directly.
 
 | Milestone | What to stage | Message |
 |-----------|--------------|---------|
@@ -173,7 +173,7 @@ All commits below land on the **task branch** (`task/NNN-<slug>`), never on `mas
 | Task code merged (🟡) | source changes, moved task file, `coverage-tracker.md` row set to 🟡, affected `docs/spec/` files | `feat: complete task NNN — <name>` |
 | Task verified (✅) | `coverage-tracker.md` row promoted 🟡 → ✅ with `Verified by` filled | `verify: confirm task NNN — <evidence>` |
 | Diagram updated | `docs/architecture/diagrams.md` (with date bump) | `docs: refresh diagrams — <what changed>` |
-| Merged into master | (after `finish-task.sh` / `git merge task/NNN-<slug>`) | (default `Merge branch …` message) |
+| Merged into main | (after `finish-task.sh` / `git merge task/NNN-<slug>`) | (default `Merge branch …` message) |
 
 This repo is **local-only (no remote)**; `push` steps in the generic flow are no-ops here.
 
@@ -235,7 +235,7 @@ export CLAUDE_DISABLED_HOOKS=desktop-notify,batch-format-typecheck
 - **Add future-tense statements to the spec.** Planned work goes in `docs/plans/` and `docs/tasks/`.
 - **Mark a task ✅ on the same commit as the feature work.**
 - **Claim a verification level you did not actually reach.**
-- **Commit directly to `master`.** Use `[allow-main]` in the message for genuine main-only doc fixes.
+- **Commit directly to `main`.** Use `[allow-main]` in the message for genuine main-only doc fixes.
 - **Leak an engine-specific type (Rego/Cedar) into the AuthZEN contract** — it breaks the adapter seam.
 - **Lower vault's injection floor** — obligations raise only.
 
