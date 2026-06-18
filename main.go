@@ -18,6 +18,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 )
 
 func main() {
@@ -41,6 +42,8 @@ func cmdServe(args []string) {
 	socket := fs.String("socket", "", "unix socket path (required)")
 	allow := fs.String("allow", "", "comma-separated net allowlist")
 	evaluator := fs.String("evaluator", EvaluatorAllowlist, "evaluator backend: allowlist|opa")
+	cacheTTL := fs.Duration("cache-ttl", 5*time.Second, "decision cache TTL (security bound on staleness); 0 disables caching")
+	rateLimit := fs.Float64("rate-limit", 100, "max decisions/sec on the IPC decide path; over-limit returns a rate_limited error (never an allow)")
 	fs.Parse(args)
 	if *socket == "" {
 		fmt.Fprintln(os.Stderr, "serve: --socket is required")
@@ -53,8 +56,15 @@ func cmdServe(args []string) {
 		fmt.Fprintln(os.Stderr, "serve: refusing to start:", err)
 		os.Exit(1)
 	}
-	fmt.Fprintf(os.Stderr, "policy-engine serving on %s (evaluator=%s, allow=%v)\n", *socket, *evaluator, *allow)
-	if err := serve(*socket, engine); err != nil {
+	// Front the evaluator with the decision cache (serve only; ADR-004). The cache composes through
+	// the Decider seam — a hit replays the evaluator's AuthZEN response, never an injected allow.
+	cached := newCachingDecider(engine, *cacheTTL, nil)
+	// Rate-limit the IPC decide op (token bucket). Over-limit is rejected before evaluation with the
+	// rate_limited error — fail-closed, never an allow.
+	limiter := newTokenBucket(*rateLimit, nil)
+	fmt.Fprintf(os.Stderr, "policy-engine serving on %s (evaluator=%s, allow=%v, cache-ttl=%s, rate-limit=%.0f/s)\n",
+		*socket, *evaluator, *allow, *cacheTTL, *rateLimit)
+	if err := serve(*socket, cached, limiter); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}

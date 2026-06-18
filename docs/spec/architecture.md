@@ -53,7 +53,9 @@ decision that the agent runtime honors. The integration is the obligation contra
 |-----------|-----------|-------------|----------------|------------|
 | policy-engine binary | CLI / dispatch | `main.go` | Parse `serve`/`decide` subcommands and flags (incl. `--evaluator`); select the evaluator via `selectDecider`; one-shot decide; exit codes; fail-closed on evaluator init failure | Decider seam, IPC server |
 | policy-engine binary | Evaluator seam / selection | `decider.go` | The `Decider` interface (AuthZEN in/out) both engines satisfy; `selectDecider` maps `--evaluator` → `*Engine`\|`*OPAEngine`, fail-closed (no allowlist fallback) on OPA init failure | Engine, OPAEngine |
-| policy-engine binary | IPC server | `ipc.go` | Bind Unix socket (0600); frame newline-delimited `{op,request}` JSON; dispatch `decide`/`ping`; structured errors; routes `decide` through the selected `Decider` | Decider seam |
+| policy-engine binary | IPC server | `ipc.go` | Bind Unix socket (0600); frame newline-delimited `{op,request}` JSON; rate-limit the `decide` op (reject-not-allow); dispatch `decide`/`ping`; structured errors (incl. `rate_limited`, `retryable:true`); routes `decide` through the (cached) `Decider` | Decider seam, Rate limiter, Decision cache |
+| policy-engine binary | Decision cache | `cache.go` | `cachingDecider` wraps a `Decider` (serve path only, ADR-004); canonical full-request key incl. `context`, short TTL; replays decisions byte-identically; never an allow path | Decider seam |
+| policy-engine binary | Rate limiter | `ratelimit.go` | Global token bucket on the serve `decide` op (ADR-004); over-limit → `rate_limited` retryable error before eval; reject-not-allow, never falls open | — |
 | policy-engine binary | Engine.Decide | `policy.go` | The v0 AuthZEN evaluator (in-memory allowlist) + obligation emission — one implementation of the adapter seam | — |
 | policy-engine binary | OPAEngine.Decide | `opa.go`, `policy.rego` | The OPA/Rego AuthZEN evaluator: marshals the request into a Rego input, evaluates the embedded `policy.rego`, translates the result back to AuthZEN — the second seam implementation (ADR-002). Fail-closed on any eval error/undefined result | `github.com/open-policy-agent/opa/rego` |
 
@@ -70,6 +72,10 @@ decision that the agent runtime honors. The integration is the obligation contra
   `opa` when OPA cannot init fails closed — never a silent allowlist fallback.
 - **Fail-closed** — every non-allow path resolves to deny / structured error. (ADR-001 §7)
 - **Raise-only obligations** — `vault_injection_floor` tightens, never loosens. (ADR-001 §5)
+- **Decision cache + rate limiter are never an allow path** — on the `serve` path, the cache replays
+  exactly what the evaluator returned (full-request canonical key incl. `context`; short TTL bounds
+  staleness) and the rate limiter rejects over-limit `decide` traffic *before* evaluation with the
+  `rate_limited` retryable error. Neither has an error-to-allow path. ([ADR-004](../architecture/decisions/004-cache-and-rate-limit.md))
 
 ---
 

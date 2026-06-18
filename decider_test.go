@@ -151,7 +151,7 @@ func TestServeOPASocketRoundTrip(t *testing.T) {
 	}
 
 	sock := filepath.Join(t.TempDir(), "pe.sock")
-	go func() { _ = serve(sock, d) }()
+	go func() { _ = serve(sock, d, nil) }()
 	waitForSocket(t, sock)
 
 	// Allow round-trip.

@@ -7,11 +7,11 @@
 
 | Req ID | Test cases | Covered? |
 |--------|-----------|----------|
-| REQ-001 | TC-001, TC-002 | ⏳ |
-| REQ-002 | TC-003, TC-004, TC-005 | ⏳ |
-| REQ-003 | TC-006, TC-007 | ⏳ |
-| REQ-004 | TC-008, TC-009 | ⏳ |
-| REQ-005 | TC-010 | ⏳ |
+| REQ-001 | TC-001, TC-002 | ✅ |
+| REQ-002 | TC-003, TC-004, TC-005 | ✅ |
+| REQ-003 | TC-006, TC-007 | ✅ |
+| REQ-004 | TC-008, TC-009 | ✅ |
+| REQ-005 | TC-010 | ✅ |
 
 ## Pre-implementation checklist
 
