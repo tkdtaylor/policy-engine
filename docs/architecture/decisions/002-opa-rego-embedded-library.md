@@ -27,8 +27,24 @@ binary compiles the embedded `policy.rego` once at construction (`NewOPAEngine`)
 and evaluates each AuthZEN request against it in-process — translating the AuthZEN request into a
 Rego input and the Rego result back into the AuthZEN response.
 
-Pinned version: **`github.com/open-policy-agent/opa v0.42.1`** (resolves via the module proxy,
-exposes the stable `rego.New(...).PrepareForEval(...).Eval(...)` API).
+Pinned version: **`github.com/open-policy-agent/opa v0.70.0`** (the latest `v0.x` line — exposes the
+stable `rego.New(...).PrepareForEval(...).Eval(...)` API and preserves pre-v1.0 Rego syntax, which
+the embedded `policy.rego` uses). **`v1.x` is deliberately avoided**: OPA v1.0 made `if`/`contains`
+keywords mandatory and changed Rego defaults, which would break the v0-style `policy.rego` without a
+rewrite — out of scope for an additive task.
+
+**Version floor is a supply-chain control, not just a pin.** The task-001 implementation initially
+pinned `v0.42.1`; the pre-merge gate (`govulncheck`, reachability-based) found two *reachable*
+advisories against that tree — **GO-2022-0978** (a *protection bypass* in OPA, directly relevant to
+this engine's fail-closed model; fixed in `v0.44.0`) and **GO-2024-2920** (DoS in
+`vektah/gqlparser`, which newer OPA drops entirely). Bumping to `v0.70.0` cleared both. A third
+reachable advisory pulled transitively through OPA's `init` — **GO-2026-4394** (arbitrary code
+execution via PATH hijacking in `go.opentelemetry.io/otel/sdk`, fixed in `v1.40.0`) — is closed by
+an explicit module override to `otel/sdk v1.40.0` (and the `otel`/`trace`/`metric` family to match),
+since no `v0.x` OPA pins an otel new enough to carry the fix. Post-fix, `govulncheck ./...` reports
+**0 reachable vulnerabilities** (2 advisories remain in *required-but-uncalled* modules — not
+reachable from policy-engine's code). The minimum acceptable state going forward: **`govulncheck`
+clean on the reachable set** before any merge that touches the OPA module tree.
 
 The OPA evaluator is added as a **new type `OPAEngine`** (`opa.go`) with the **same seam signature**
 as the v0 `Engine` — `Decide(req map[string]any) map[string]any`. The v0 `Engine` (`policy.go`),
