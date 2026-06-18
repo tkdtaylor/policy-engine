@@ -19,7 +19,9 @@ points* ([interfaces.md](interfaces.md)).
   one-shot CLI (`decide --host …` or a JSON request on stdin) — whose resolved target host is in
   the configured net allowlist.
 - **Response:** returns `decision: "allow"` with `context.reason` naming the matched host and
-  `context.obligations` listing the obligations the caller must honor.
+  `context.obligations` listing the obligations the caller must honor. The decision may be produced
+  by either evaluator behind the seam — the v0 in-memory allowlist or the OPA/Rego evaluator
+  (`policy.rego`, ADR-002); the observable response is identical regardless of which evaluates it.
 - **Side effects:** none performed by policy-engine itself — it emits obligations
   (`tier_select`, `vault_injection_floor`, `audit_emit`) for the agent runtime to honor. The CLI
   prints the indented JSON response; exit code `0`.
@@ -38,9 +40,10 @@ points* ([interfaces.md](interfaces.md)).
 ### B-003: Emit obligations on allow
 
 - **Trigger:** any allow decision (B-001).
-- **Response:** the allow response's `context.obligations` carries, in v0: `tier_select` =
-  `bubblewrap` (exec-sandbox isolation tier), `vault_injection_floor` = `proxy` (raises vault's
-  floor), `audit_emit` = `true` (emit a decision trace).
+- **Response:** the allow response's `context.obligations` carries: `tier_select` = `bubblewrap`
+  (exec-sandbox isolation tier), `vault_injection_floor` = `proxy` (raises vault's floor),
+  `audit_emit` = `true` (emit a decision trace). The OPA/Rego evaluator emits the same three
+  obligations byte-for-byte as the in-memory evaluator.
 - **Side effects:** the obligations are a contract the agent runtime honors before/while
   executing — they are not actions policy-engine performs directly.
 - **Failure modes:** `vault_injection_floor` is **raise-only** — it may move the floor from `env`
@@ -82,7 +85,9 @@ points* ([interfaces.md](interfaces.md)).
 ## Behavioral invariants
 
 - **No allow is reachable except through an explicit allowlist match.** Every other path —
-  unknown host, malformed request, unknown op — terminates in `deny` or a structured error.
+  unknown host, malformed request, unknown op — terminates in `deny` or a structured error. This
+  holds through the OPA/Rego evaluator too: a policy-preparation failure, eval error, undefined
+  result, or unresolvable host all fail closed to `deny`, never an allow and never a leaked error.
 - **The agent never obtains an in-process decision.** All agent-originated decisions cross the IPC
   boundary; the in-process `decide` is the operator CLI only.
 - **Obligations on `vault_injection_floor` only ever raise the floor.**

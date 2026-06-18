@@ -1,6 +1,6 @@
 # Architecture Diagrams — policy-engine
 
-**Last updated:** 2026-06-18
+**Last updated:** 2026-06-18 (ADR-002 — OPA/Rego evaluator added behind the seam)
 
 C4-structured Mermaid diagrams plus the primary runtime sequence. See
 [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced
@@ -56,7 +56,8 @@ C4Component
     Container_Boundary(boundary, "policy-engine binary") {
         Component(main, "CLI / dispatch", "main.go", "serve & decide subcommands; flag parsing; Engine construction")
         Component(ipc, "IPC server", "ipc.go", "JSON over Unix socket; frames {op,request}; dispatch decide/ping")
-        Component(engine, "Engine.Decide", "policy.go", "AuthZEN evaluator (v0 in-memory allowlist) + obligation emission — the adapter seam")
+        Component(engine, "Engine.Decide", "policy.go", "v0 AuthZEN evaluator (in-memory allowlist) — one seam implementation")
+        Component(opa, "OPAEngine.Decide", "opa.go + policy.rego", "OPA/Rego AuthZEN evaluator (ADR-002); marshal request→Rego input, eval embedded policy, translate result→AuthZEN")
     }
 
     Rel(agent, ipc, "decide", "JSON / Unix socket")
@@ -64,12 +65,14 @@ C4Component
     Rel(main, ipc, "starts (serve)")
     Rel(main, engine, "calls (decide CLI)")
     Rel(ipc, engine, "Decide(request)")
+    Rel(ipc, opa, "Decide(request) — same seam, OPA-backed deployment")
 ```
 
 **Key contracts**
-- `Engine.Decide(map[string]any) -> map[string]any` is the **AuthZEN adapter seam** (ADR-001 §3).
-  Every future evaluator (OPA, Cedar) replaces the body of this method without changing callers.
-  No engine-specific type may appear in its argument or return value.
+- `Decide(map[string]any) -> map[string]any` is the **AuthZEN adapter seam** (ADR-001 §3). Two
+  implementations exist behind it — the in-memory `Engine` and the OPA/Rego `OPAEngine` (ADR-002);
+  future evaluators (Cedar, OpenFGA) add another with the identical signature, without changing
+  callers. No engine-specific type (`rego.*`/`ast.*`) may appear in the argument or return value.
 - The agent reaches the engine **only via `ipc`** — never `main`'s in-process `decide` path
   (out-of-process invariant, ADR-001 §1).
 - `Decide` is **fail-closed**: any unmatched/unevaluable request returns `deny` (ADR-001 §7).
@@ -105,8 +108,9 @@ sequenceDiagram
 ```
 
 ADRs governing this flow: [ADR-001](decisions/001-foundational-stack.md) (out-of-process,
-AuthZEN seam, obligation model, fail-closed). The v1 OPA adoption (task 001 / ADR-002) replaces
-only the inner `Engine.Decide` evaluation step — this sequence shape is preserved.
+AuthZEN seam, obligation model, fail-closed) and [ADR-002](decisions/002-opa-rego-embedded-library.md)
+(OPA/Rego evaluator). The OPA adoption swaps only the inner evaluator (`OPAEngine.Decide` in place
+of `Engine.Decide`) — this sequence shape, the IPC framing, and the obligation set are preserved.
 
 ---
 
@@ -116,6 +120,6 @@ only the inner `Engine.Decide` evaluation step — this sequence shape is preser
   integration (obligation type) is added or removed; an ADR changes a diagrammed flow. Keep
   [`../spec/architecture.md`](../spec/architecture.md) in sync.
 - **Edit existing over adding new.** Duplicates rot independently.
-- **Note ADRs that don't change diagrams.** When ADR-002 adopts OPA behind the seam, add a
-  one-line note that the sequence shape is preserved.
+- **Note ADRs that don't change diagrams.** ADR-002 added the `OPAEngine` component behind the
+  existing seam; the System Context and the runtime-sequence shape were preserved.
 - **Update the date at the top** when you change anything substantive.

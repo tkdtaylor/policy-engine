@@ -75,32 +75,45 @@ indirectly through **obligations** emitted in the decision, which the agent runt
 ### Function: `Engine.Decide` — the AuthZEN adapter seam
 
 ```go
-func (e *Engine) Decide(req map[string]any) map[string]any
+func (e *Engine)    Decide(req map[string]any) map[string]any   // policy.go    — v0 in-memory allowlist
+func (e *OPAEngine) Decide(req map[string]any) map[string]any   // opa.go       — embedded OPA (Rego)
 ```
 
-- **Implementors:** `Engine` (`policy.go`). v0 evaluates an in-memory allowlist; future evaluators
-  (OPA, Cedar) replace the body without changing this signature.
-- **Consumers:** `ipc.serve` (per-connection `decide` op) and `main.cmdDecide` (one-shot CLI).
+- **Implementors:** `Engine` (`policy.go`, in-memory allowlist) and `OPAEngine` (`opa.go`, embedded
+  OPA/Rego evaluating `policy.rego`). Both expose the **identical** `Decide(req map[string]any)
+  map[string]any` signature; they are interchangeable behind the seam. Future evaluators (Cedar,
+  OpenFGA) add another implementation the same way.
+- **Consumers:** `ipc.serve` (per-connection `decide` op) and `main.cmdDecide` (one-shot CLI). They
+  hold the v0 `*Engine`; an OPA-backed deployment supplies an `*OPAEngine` through the same seam.
 - **Stability:** this is **the** seam. Its argument and return value are AuthZEN-shaped JSON-like
-  maps; **no engine-specific type may appear in either**. Changing the shape is an ADR-level decision.
+  maps; **no engine-specific type may appear in either**. `OPAEngine` marshals the request into a
+  Rego input and translates the `rego.ResultSet` back into an AuthZEN response — no `rego.*` / `ast.*`
+  value ever appears in the argument or return. Changing the shape is an ADR-level decision.
 - **Required behavior:** must be **fail-closed** — any request it cannot positively authorize
-  returns `decision:"deny"` (or, upstream in IPC, a structured error treated as deny). Must never
-  emit a lowered `vault_injection_floor`. Safe to call concurrently as long as the engine's
-  allowlist is immutable after construction (the v0 guarantee).
+  returns `decision:"deny"` (or, upstream in IPC, a structured error treated as deny). For
+  `OPAEngine`, fail-closed covers query-preparation failure, evaluation error, an undefined/empty
+  result set, an unresolvable host, and any malformed Rego result — all → `deny`, no panic, no
+  leaked error. Must never emit a lowered `vault_injection_floor`. Safe to call concurrently:
+  `OPAEngine` reuses a query prepared once at construction over an immutable allowlist.
 
-### Constructor: `NewEngine`
+### Constructors: `NewEngine` / `NewOPAEngine`
 
 ```go
-func NewEngine(allow ...string) *Engine
+func NewEngine(allow ...string) *Engine        // v0 in-memory allowlist
+func NewOPAEngine(allow ...string) *OPAEngine   // embedded OPA/Rego; compiles policy.rego once
 ```
 
-Builds an `Engine` with the given hosts as its net allowlist.
+Both build an evaluator with the given hosts as its net allowlist. `NewOPAEngine` additionally
+prepares the embedded Rego query at construction; if preparation fails it returns a not-ready
+engine whose every `Decide` fails closed (`deny`). `OPAEngine.Ready() bool` reports preparation
+success — used by the integration test to skip cleanly when the OPA toolchain is unavailable.
 
 ---
 
 ## Extension points
 
-The `Engine.Decide` seam is the single extension point — a new evaluator is adopted by replacing
-the method's implementation (or having `Engine` delegate to an evaluator interface), never by
-changing callers or the contract. There is no plugin registry; extension is by source
-modification behind the seam.
+The `Decide` seam is the single extension point — a new evaluator is adopted by adding an
+implementation with the identical `Decide(req map[string]any) map[string]any` signature (the
+established pattern: `Engine` for the in-memory allowlist, `OPAEngine` for OPA/Rego), never by
+changing callers or the contract. There is no plugin registry; extension is by source modification
+behind the seam.

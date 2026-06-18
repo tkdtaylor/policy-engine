@@ -36,11 +36,14 @@ decision that the agent runtime honors. The integration is the obligation contra
 
 | Name | Technology | Responsibility | Source path | Depends on |
 |------|------------|----------------|-------------|------------|
-| policy-engine binary | Go 1.26 single static binary | Evaluate AuthZEN decisions out-of-process; serve over Unix socket or one-shot CLI | `main.go`, `policy.go`, `ipc.go` | — (stdlib only in v0) |
+| policy-engine binary | Go 1.26 single static binary | Evaluate AuthZEN decisions out-of-process; serve over Unix socket or one-shot CLI | `main.go`, `policy.go`, `ipc.go`, `opa.go`, `policy.rego` | `github.com/open-policy-agent/opa` v0.42.1 (embedded library, linked in) |
 
 **Invariants for this table**
 - The single container corresponds to the root `package main` (the flat layout, ADR-001 §2).
-- No external runtime dependency in v0; the first will be OPA (task 001), behind the `Engine.Decide` seam.
+- OPA (Rego) is embedded as a **Go library linked into the one binary** (ADR-002), not a sidecar —
+  the single-static-binary deployment is preserved. The embedded `policy.rego` is the evaluator's
+  policy. This ended the v0 zero-runtime-dependency property; the OPA module tree is now a
+  supply-chain surface (dep-scan / code-scanner gates).
 
 ---
 
@@ -50,7 +53,8 @@ decision that the agent runtime honors. The integration is the obligation contra
 |-----------|-----------|-------------|----------------|------------|
 | policy-engine binary | CLI / dispatch | `main.go` | Parse `serve`/`decide` subcommands and flags; build `Engine`; one-shot decide; exit codes | Engine, IPC server |
 | policy-engine binary | IPC server | `ipc.go` | Bind Unix socket (0600); frame newline-delimited `{op,request}` JSON; dispatch `decide`/`ping`; structured errors | Engine |
-| policy-engine binary | Engine.Decide | `policy.go` | The AuthZEN evaluator (v0 in-memory allowlist) + obligation emission — the adapter seam | — |
+| policy-engine binary | Engine.Decide | `policy.go` | The v0 AuthZEN evaluator (in-memory allowlist) + obligation emission — one implementation of the adapter seam | — |
+| policy-engine binary | OPAEngine.Decide | `opa.go`, `policy.rego` | The OPA/Rego AuthZEN evaluator: marshals the request into a Rego input, evaluates the embedded `policy.rego`, translates the result back to AuthZEN — the second seam implementation (ADR-002). Fail-closed on any eval error/undefined result | `github.com/open-policy-agent/opa/rego` |
 
 ---
 
@@ -58,8 +62,9 @@ decision that the agent runtime honors. The integration is the obligation contra
 
 - **Out-of-process authorization** — the agent reaches the engine only via the IPC server; no
   in-process agent decide path. ([ADR-001](../architecture/decisions/001-foundational-stack.md) §1)
-- **AuthZEN adapter seam** — `Engine.Decide(request) -> response` is engine-agnostic; evaluators
-  swap behind it. (ADR-001 §3; the OPA adoption is task 001 / ADR-002.)
+- **AuthZEN adapter seam** — `Decide(request) -> response` is engine-agnostic; evaluators swap
+  behind it. Two implementations exist: the v0 in-memory `Engine` and the OPA/Rego `OPAEngine`
+  (ADR-001 §3, ADR-002). No `rego.*`/`ast.*` type crosses the seam.
 - **Fail-closed** — every non-allow path resolves to deny / structured error. (ADR-001 §7)
 - **Raise-only obligations** — `vault_injection_floor` tightens, never loosens. (ADR-001 §5)
 
@@ -70,4 +75,4 @@ decision that the agent runtime honors. The integration is the obligation contra
 - Update in the same commit as `../architecture/diagrams.md` when structure changes.
 - Supersede in place; never append. The ADR carries the *why*.
 - The drift-audit mode of the `architect` agent uses this catalog against the import graph and
-  the deployable-artifact list. When ADR-002 embeds OPA, add it to Container §3 `Depends on`.
+  the deployable-artifact list. OPA is embedded (ADR-002) and recorded in Container §3 `Depends on`.
