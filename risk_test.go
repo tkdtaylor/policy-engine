@@ -122,12 +122,15 @@ func TestRiskMediumTierGvisor(t *testing.T) {
 // TC-003: High risk selects the firecracker tier
 // ---------------------------------------------------------------------------
 
-// TC-003: risk=0.9 (> 0.7) → tier_select=firecracker; 0.7001 and 1.0 also firecracker.
+// TC-003: firecracker (risk > 0.7) is observable on an ALLOW only for 0.7 < risk < 0.9.
+// Per ADR-003 (task 003), risk >= 0.9 trips the require_approval gate, so the firecracker
+// allow-band stops just below the approval threshold. The 0.7001..0.89 values stay allow +
+// firecracker; the risk >= 0.9 cases (now require_approval) are asserted in approval_test.go.
 func TestRiskHighTierFirecracker(t *testing.T) {
 	e := NewOPAEngine("api.example.com")
 	skipIfOPAUnavailable(t, e)
 
-	for _, risk := range []float64{0.7001, 0.9, 1.0} {
+	for _, risk := range []float64{0.7001, 0.8, 0.89} {
 		out := e.Decide(riskReq("api.example.com", risk, nil))
 		if out["decision"] != Allow {
 			t.Fatalf("risk=%.4f: expected allow, got %v", risk, out["decision"])
@@ -142,18 +145,21 @@ func TestRiskHighTierFirecracker(t *testing.T) {
 // TC-004: injection-suspected flag raises the floor from env to proxy
 // ---------------------------------------------------------------------------
 
-// TC-004: memory_flags=["injection-suspected"] with an allow whose baseline floor is env
-// → vault_injection_floor=proxy (raised).
+// TC-004: memory_flags=["injection-suspected"] raises vault_injection_floor=proxy. Per ADR-003
+// (task 003) the injection-suspected flag now also trips the require_approval gate, so the DECISION
+// is require_approval — but the raised floor rides along (defense-in-depth while paused). The
+// floor-raise obligation-value assertion is what TC-004 verifies and is preserved here; only the
+// wrapping decision changed.
 func TestInjectionFlagRaisesFloor(t *testing.T) {
 	e := NewOPAEngine("api.example.com")
 	skipIfOPAUnavailable(t, e)
 
 	out := e.Decide(riskReq("api.example.com", 0.1, []string{"injection-suspected"}))
-	if out["decision"] != Allow {
-		t.Fatalf("expected allow, got %v", out["decision"])
+	if out["decision"] != RequireApproval {
+		t.Fatalf("expected require_approval (injection-suspected gate, ADR-003), got %v", out["decision"])
 	}
 	if floor := riskFloor(t, out); floor != "proxy" {
-		t.Fatalf("expected vault_injection_floor=proxy (raised by injection-suspected), got %q", floor)
+		t.Fatalf("expected vault_injection_floor=proxy (raised by injection-suspected, rides along), got %q", floor)
 	}
 }
 
@@ -192,8 +198,10 @@ func TestNoFlagKeepsBaselineFloor(t *testing.T) {
 // TC-006: the raise-only invariant is enforced by an explicit rank-ordering assertion.
 // The Rego policy emits floor = max(baseline_rank, flag_rank) under the ordering env(0) < proxy(1).
 // The test maps each observed floor to its rank and asserts:
-//   rank(flagged) >= rank(unflagged)   — flag never lowers the floor
-//   rank(unflagged) >= rank("env")     — floor never goes below the baseline
+//
+//	rank(flagged) >= rank(unflagged)   — flag never lowers the floor
+//	rank(unflagged) >= rank("env")     — floor never goes below the baseline
+//
 // This assertion would BREAK if the Rego floor logic emitted a floor below the baseline
 // or below what a flag-present evaluation emitted.
 func TestRaiseOnlyInvariant(t *testing.T) {
@@ -216,19 +224,23 @@ func TestRaiseOnlyInvariant(t *testing.T) {
 	}
 
 	// Evaluate both cases: no flag (baseline) and injection-suspected (flag present).
+	// Per ADR-003, injection-suspected trips the require_approval gate — so the flagged case's
+	// DECISION is require_approval, not allow. The floor-raise rides along, so the raise-only
+	// obligation-value assertions below are unchanged; only the expected decision per case differs.
 	cases := []struct {
-		label string
-		flags []string
+		label    string
+		flags    []string
+		decision string
 	}{
-		{"no-flag (baseline)", nil},
-		{"injection-suspected (flag)", []string{"injection-suspected"}},
+		{"no-flag (baseline)", nil, Allow},
+		{"injection-suspected (flag)", []string{"injection-suspected"}, RequireApproval},
 	}
 
 	ranks := make([]int, len(cases))
 	for i, c := range cases {
 		out := e.Decide(riskReq("api.example.com", 0.1, c.flags))
-		if out["decision"] != Allow {
-			t.Fatalf("raise-only [%s]: expected allow, got %v", c.label, out["decision"])
+		if out["decision"] != c.decision {
+			t.Fatalf("raise-only [%s]: expected decision %q, got %v", c.label, c.decision, out["decision"])
 		}
 		floor := riskFloor(t, out)
 		ranks[i] = rankFloor(t, floor)
@@ -374,8 +386,11 @@ func TestMalformedRequestDeny(t *testing.T) {
 // TC-010: AuthZEN seam unchanged — no engine type leaks through risk scoring
 // ---------------------------------------------------------------------------
 
-// TC-010: the response from a risk-scored allow marshals to AuthZEN-only JSON; no rego.*/ast.*
+// TC-010: the response from a risk-scored decision marshals to AuthZEN-only JSON; no rego.*/ast.*
 // type appears in the output; Decide's signature stays (map[string]any) → map[string]any.
+// The input (risk=0.9 + injection-suspected) trips the require_approval gate (ADR-003); the
+// risk-scored obligations still ride along, so the no-leak + obligation-value assertions are
+// unchanged — only the wrapping decision is require_approval.
 func TestRiskScoringNoRegoLeak(t *testing.T) {
 	e := NewOPAEngine("api.example.com")
 	skipIfOPAUnavailable(t, e)
@@ -384,8 +399,8 @@ func TestRiskScoringNoRegoLeak(t *testing.T) {
 	var _ Decider = (*OPAEngine)(nil)
 
 	out := e.Decide(riskReq("api.example.com", 0.9, []string{"injection-suspected"}))
-	if out["decision"] != Allow {
-		t.Fatalf("expected allow, got %v", out["decision"])
+	if out["decision"] != RequireApproval {
+		t.Fatalf("expected require_approval (risk=0.9 + injection-suspected gate, ADR-003), got %v", out["decision"])
 	}
 
 	// Round-trip through JSON: only AuthZEN keys survive; marshal must not error.
@@ -397,8 +412,8 @@ func TestRiskScoringNoRegoLeak(t *testing.T) {
 	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatalf("risk-scored response JSON did not round-trip: %v", err)
 	}
-	if got["decision"] != "allow" {
-		t.Fatalf("expected decision allow in marshaled JSON, got %v", got["decision"])
+	if got["decision"] != "require_approval" {
+		t.Fatalf("expected decision require_approval in marshaled JSON, got %v", got["decision"])
 	}
 	ctx, ok := got["context"].(map[string]any)
 	if !ok {

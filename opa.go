@@ -147,10 +147,14 @@ func resolveHost(req map[string]any) string {
 
 // translateResult converts the Rego `result` object into the AuthZEN response. It defends against
 // any malformed result (missing/odd fields) by falling back to deny — fail-closed all the way.
+//
+// Two emitting decisions carry obligations: `allow` and `require_approval` (ADR-003). The
+// require_approval decision is a gate layered above the risk-scored allow — it carries the same
+// risk-scored obligations PLUS the structured escalation payload. Anything else is a deny.
 func translateResult(result map[string]any, host string) map[string]any {
 	decision, _ := result["decision"].(string)
-	if decision != Allow {
-		// Anything that is not an explicit allow is a deny.
+	if decision != Allow && decision != RequireApproval {
+		// Anything that is not an explicit allow or require_approval is a deny.
 		return denyResponse(host)
 	}
 
@@ -161,13 +165,13 @@ func translateResult(result map[string]any, host string) map[string]any {
 
 	obligations := translateObligations(result["obligations"])
 	if len(obligations) == 0 {
-		// An allow with no obligations would silently drop the raise-only vault floor; treat the
-		// malformed result as a deny rather than emit a weaker posture.
+		// An emitting decision with no obligations would silently drop the raise-only vault floor;
+		// treat the malformed result as a deny rather than emit a weaker posture.
 		return denyResponse(host)
 	}
 
 	return map[string]any{
-		"decision": Allow,
+		"decision": decision,
 		"context": map[string]any{
 			"reason":      reason,
 			"obligations": obligations,

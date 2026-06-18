@@ -116,6 +116,45 @@ context  : { reason: string, obligations: [ {type, value} ] }
   "context": { "reason": "host 'evil.example.net' is not in the net allowlist", "obligations": [] } }
 ```
 
+- **Example (require_approval):** the OPA evaluator escalates an otherwise-allowable request when
+  `risk >= 0.9` **or** `memory_flags` contains `injection-suspected` (ADR-003). The escalation
+  payload rides alongside the task-002 risk-scored obligations (the floor-raise rides along as
+  defense-in-depth while paused):
+
+```json
+{ "decision": "require_approval",
+  "context": {
+    "reason": "host 'api.example.com' is in the net allowlist",
+    "obligations": [
+      {"type":"require_approval","value":{
+        "reason":"risk score 0.95 is at or above the approval threshold 0.9; human approval required before proceeding",
+        "risk":0.95,
+        "triggered_by":"risk_threshold",
+        "required_to_proceed":"operator approval"}},
+      {"type":"tier_select","value":"firecracker"},
+      {"type":"vault_injection_floor","value":"env"},
+      {"type":"audit_emit","value":true} ] } }
+```
+
+### Format: escalation payload (`require_approval` obligation `value`)
+
+- **Producer:** the OPA/Rego evaluator (`policy.rego`) when the approval gate trips (B-008).
+- **Consumer:** the agent runtime — pauses the action and routes the request for approval.
+- **Carrier:** a plain JSON object under the `require_approval` obligation's `value` field. It is
+  **not** a new top-level contract field and carries no engine-specific type — AuthZEN-only JSON.
+- **Schema:**
+
+```
+reason              : string   # human-readable why approval is needed (non-empty)
+risk                : number   # the risk score, echoed (0 when approval was triggered by the flag with no valid risk)
+triggered_by        : "risk_threshold" | "memory_flag"   # which signal fired
+required_to_proceed : string   # what would unblock (currently "operator approval", non-empty)
+```
+
+- **`triggered_by` semantics:** `"risk_threshold"` when `risk >= 0.9` fired; `"memory_flag"` when
+  `injection-suspected` is present. **When both fire, `triggered_by` is `"memory_flag"`** — the
+  suspicious-memory pattern is the stronger human-in-the-loop signal (ADR-003).
+
 ### Format: IPC envelope
 
 - **Producer/Consumer:** agent ↔ `ipc.serve`, newline-delimited JSON over a Unix socket.
@@ -141,7 +180,7 @@ The closed set carried in an allow response's `context.obligations`:
 |--------|----------------|---------|-----------|
 | `tier_select` | `bubblewrap` \| `gvisor` \| `firecracker` | exec-sandbox isolation tier | — |
 | `vault_injection_floor` | `env` \| `proxy` | vault credential injection floor | **raise-only** (never lowers) |
-| `require_approval` | (presence) | agent must pause and escalate | — |
+| `require_approval` | escalation payload (object) | agent must pause and escalate; `value` is the escalation payload (`reason`, `risk`, `triggered_by`, `required_to_proceed`) | — |
 | `audit_emit` | `true` | emit a full decision trace | — |
 
 The v0 in-memory evaluator (`--evaluator allowlist`) always emits `tier_select=bubblewrap`,
@@ -149,7 +188,12 @@ The v0 in-memory evaluator (`--evaluator allowlist`) always emits `tier_select=b
 inputs). The OPA/Rego evaluator (`--evaluator opa`) emits risk-scored values: `tier_select`
 driven by `context.risk` (see bands above), `vault_injection_floor` driven by `context.memory_flags`
 with `env` as the baseline (raised to `proxy` by `injection-suspected`), `audit_emit=true`.
-`require_approval` is part of the contract but not yet emitted by either evaluator.
+The OPA/Rego evaluator also emits the **`require_approval`** obligation when the approval gate
+trips (ADR-003, task 003): on an otherwise-allowable request with `risk >= 0.9` **or**
+`injection-suspected`, the decision becomes `require_approval` and the response carries exactly one
+`require_approval` obligation (the escalation payload) **plus** the risk-scored `tier_select`,
+`vault_injection_floor`, and `audit_emit` obligations. The v0 in-memory evaluator does **not**
+emit `require_approval`.
 
 ---
 
@@ -163,7 +207,11 @@ with `env` as the baseline (raised to `proxy` by `injection-suspected`), `audit_
   minimum. For the v0 evaluator the floor is always `proxy`; for the OPA evaluator the baseline
   is `env` and `injection-suspected` raises it to `proxy`.
 - **No engine-specific type** (Rego AST, Cedar entity, etc.) appears anywhere in the request or
-  response — the seam is JSON-shaped AuthZEN only.
-
-> TODO: confirm whether `require_approval` will carry a structured escalation payload (approver,
-> reason) when first emitted — undecided until a task introduces the approval workflow.
+  response — the seam is JSON-shaped AuthZEN only. The escalation payload under the
+  `require_approval` obligation `value` is likewise plain AuthZEN JSON.
+- **`require_approval` is a gate on an otherwise-allowable request.** It is reachable only when the
+  host is allowlisted and the request is well-formed; a `deny` is never upgraded to
+  `require_approval` (fail-closed precedence — ADR-003).
+- **A `require_approval` response carries exactly one obligation of type `require_approval`** (the
+  escalation payload); the risk-scored `tier_select` / `vault_injection_floor` / `audit_emit`
+  obligations coexist alongside it.
