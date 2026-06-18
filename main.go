@@ -44,7 +44,10 @@ func cmdServe(args []string) {
 	evaluator := fs.String("evaluator", EvaluatorAllowlist, "evaluator backend: allowlist|opa|cedar")
 	cacheTTL := fs.Duration("cache-ttl", 5*time.Second, "decision cache TTL (security bound on staleness); 0 disables caching")
 	rateLimit := fs.Float64("rate-limit", 100, "max decisions/sec on the IPC decide path; over-limit returns a rate_limited error (never an allow)")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(os.Stderr, "serve: "+err.Error())
+		os.Exit(2)
+	}
 	if *socket == "" {
 		fmt.Fprintln(os.Stderr, "serve: --socket is required")
 		os.Exit(2)
@@ -75,7 +78,10 @@ func cmdDecide(args []string) {
 	allow := fs.String("allow", "", "comma-separated net allowlist")
 	host := fs.String("host", "", "target host (shortcut; or pipe a full AuthZEN request on stdin)")
 	evaluator := fs.String("evaluator", EvaluatorAllowlist, "evaluator backend: allowlist|opa|cedar")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(os.Stderr, "decide: "+err.Error())
+		os.Exit(2)
+	}
 	// Fail-closed: an unknown evaluator or an OPA engine that did not initialize errors out
 	// (non-zero exit) — the one-shot decide does NOT silently fall back to the allowlist.
 	engine, err := selectDecider(*evaluator, splitCSV(*allow)...)

@@ -11,16 +11,19 @@ checks; the implementation lives in the runner the rules point to.
 
 ## Status
 
-There is **no `make fitness` target wired yet** — `go build ./... && go test ./...` is the
-verification gate today. The rows below are **proposed** (the seam-protecting invariants the
-codebase implies). Promoting one to `active` means adding a `fitness-<rule>` Makefile target and
-wiring it into a `fitness` umbrella target, in the same commit as the rule change.
+`make check` (build + test + lint) is the verification gate today. The lint stage runs
+`golangci-lint`'s `standard` set, and **F-005 (static analysis clean) is active and enforced by
+it** — the first wired fitness function. The four security invariants F-001…F-004 remain
+**proposed**: each needs a bespoke `make fitness-<rule>` runner that does not exist yet. There is
+**no `make fitness` umbrella target** wiring them together — that, and the per-rule runners, are
+future work. Promoting one of F-001…F-004 to `active` means adding its `fitness-<rule>` Makefile
+target in the same commit as the promotion.
 
-## How to run (once wired)
+## How to run
 
 ```bash
-make fitness          # run all fitness functions
-make fitness-<rule>   # run one rule by name
+make check            # runs F-005 (lint stage) as part of build + test + lint — wired today
+make fitness-<rule>   # per-rule runner for F-001…F-004 — not yet wired (future work)
 ```
 
 ## Rules
@@ -31,6 +34,7 @@ make fitness-<rule>   # run one rule by name
 | F-002 | AuthZEN seam stays engine-agnostic | structural | No engine-specific type (Rego AST, Cedar entity, etc.) appears in `Engine.Decide`'s argument or return, or in the IPC contract | 0 engine-specific types in the contract | `make fitness-clean-seam` (TODO) | block | proposed | The seam is what lets OPA/Cedar/OpenFGA swap behind one contract; a leaked Rego type couples every caller to the evaluator and defeats the adapter (ADR-001 §3). |
 | F-003 | Injection floor is raise-only | security | No code path emits a `vault_injection_floor` obligation lower than the credential's configured floor | 0 lowering emissions | `make fitness-floor-raise-only` (TODO) | block | proposed | Lowering the floor would let policy-engine weaken vault's credential posture — the reconciliation rule is raise-only, never lower (ADR-001 §5). |
 | F-004 | Fail-closed: unknown/error → deny | security | Every non-allow path (unknown host, malformed request, unknown op, eval error) resolves to `deny` or a structured error, never `allow` | 0 allow-on-error paths | `make fitness-fail-closed` (TODO) | block | proposed | Allow-on-error is the classic authorization regression; the safe terminal state must always be deny (ADR-001 §7, behaviors B-002/B-006). |
+| F-005 | Static analysis clean (golangci-lint) | hygiene | The `standard` golangci-lint set (errcheck, govet, ineffassign, staticcheck, unused) reports no issues — no unchecked errors, no dead/duplicated logic, no staticcheck violations on the decide path or its tests | 0 issues | `make check` (lint stage: `golangci-lint run ./...`) | block | active | Unchecked errors and dead-logic bugs are exactly how a fail-closed control silently regresses — SA4000 had already neutered a rate-limiter test. This is the first wired gate; it runs on every `make check`. |
 
 Categories: `structural`, `hygiene`, `performance`, `complexity`, `security`, `coverage`.
 
@@ -53,5 +57,6 @@ Severity: `block` (fails the runner) / `warn` (surfaces only).
 
 - These rules are policy-engine's commitments, not generic best practice. Each guards a stated
   invariant in the spec; a violation breaks a security promise, not just style.
-- They are `proposed` until the operator confirms and the Makefile target exists. Don't claim a
-  rule is enforced until its check command runs.
+- F-005 is `active` and enforced on every `make check` (the lint stage). F-001…F-004 stay
+  `proposed` until their bespoke `make fitness-<rule>` runner exists and the operator confirms it.
+  Don't claim a rule is enforced until its check command runs.

@@ -27,17 +27,23 @@ func TestTokenBucketBurstThenReject(t *testing.T) {
 func TestTokenBucketRefills(t *testing.T) {
 	fake := &fakeClock{t: time.Unix(1_700_000_000, 0)}
 	b := newTokenBucket(2, fake.now)
-	// Drain.
+	// Drain capacity (2 tokens at rate=2).
 	b.Allow()
 	b.Allow()
+	// Exhaustion: the next single Allow() must be false (no duplicated expression).
 	if b.Allow() {
 		t.Fatalf("bucket should be empty after draining capacity")
 	}
 	// Advance 1s at 2/s -> 2 tokens back (capped at capacity).
 	fake.advance(time.Second)
-	if !b.Allow() || !b.Allow() {
-		t.Fatalf("after 1s at 2/s, two tokens should be available")
+	// Recovery: capture each refilled Allow() in its own variable so both calls are
+	// genuinely exercised (the old `!b.Allow() || !b.Allow()` short-circuited the second).
+	first := b.Allow()
+	second := b.Allow()
+	if !first || !second {
+		t.Fatalf("after 1s at 2/s, two tokens should be available (first=%v second=%v)", first, second)
 	}
+	// Exhausted again: the refill is capped at capacity, so a third call is rejected.
 	if b.Allow() {
 		t.Fatalf("only the refilled tokens (capped at capacity) should be available")
 	}
