@@ -28,13 +28,16 @@ Subcommands:
 | `serve` | subcommand | — | Start the IPC server (long-running) |
 | `serve --socket` | string | — (required) | Unix socket path to bind; missing → usage error |
 | `serve --allow` | string (CSV) | `""` | Comma-separated net allowlist |
+| `serve --evaluator` | string (`allowlist`\|`opa`) | `allowlist` | Evaluator backend behind the seam; init failure / unknown value → refuse to start (exit `1`) |
 | `decide` | subcommand | — | One-shot decision; exits non-zero on a non-allow decision |
 | `decide --allow` | string (CSV) | `""` | Comma-separated net allowlist |
 | `decide --host` | string | `""` | Target host shortcut; builds a default AuthZEN request. If empty, a full AuthZEN request is read from stdin |
+| `decide --evaluator` | string (`allowlist`\|`opa`) | `allowlist` | Evaluator backend behind the seam; init failure / unknown value → exit `1` (no allow, no fallback) |
 
 **Exit codes:**
 - `0` — success / `decide` returned allow
-- `1` — generic error (bind failure, or `decide` returned a non-allow decision)
+- `1` — generic error (bind failure; `decide` returned a non-allow decision; evaluator init failure
+  or unknown `--evaluator` value)
 - `2` — usage error (missing subcommand, missing `--socket`, or neither `--host` nor parseable stdin)
 
 ### IPC decision protocol (Unix socket)
@@ -72,19 +75,30 @@ indirectly through **obligations** emitted in the decision, which the agent runt
 
 ## Internal public surface
 
-### Function: `Engine.Decide` — the AuthZEN adapter seam
+### Interface: `Decider` — the AuthZEN adapter seam
 
 ```go
+type Decider interface { Decide(map[string]any) map[string]any }   // decider.go — the seam
+
 func (e *Engine)    Decide(req map[string]any) map[string]any   // policy.go    — v0 in-memory allowlist
 func (e *OPAEngine) Decide(req map[string]any) map[string]any   // opa.go       — embedded OPA (Rego)
 ```
 
+- **The seam is the `Decider` interface**, declared in `decider.go`. `serve` / `cmdServe` /
+  `cmdDecide` operate on a `Decider`, never a concrete engine — the evaluator is selectable at the
+  binary boundary without changing callers. The interface itself introduces **no** engine-specific
+  type into the request/response; it is the boundary, not an evaluator.
 - **Implementors:** `Engine` (`policy.go`, in-memory allowlist) and `OPAEngine` (`opa.go`, embedded
   OPA/Rego evaluating `policy.rego`). Both expose the **identical** `Decide(req map[string]any)
-  map[string]any` signature; they are interchangeable behind the seam. Future evaluators (Cedar,
-  OpenFGA) add another implementation the same way.
-- **Consumers:** `ipc.serve` (per-connection `decide` op) and `main.cmdDecide` (one-shot CLI). They
-  hold the v0 `*Engine`; an OPA-backed deployment supplies an `*OPAEngine` through the same seam.
+  map[string]any` signature and satisfy `Decider`; they are interchangeable behind the seam. Future
+  evaluators (Cedar, OpenFGA) add another implementation the same way.
+- **Selection helper:** `selectDecider(evaluator string, allow ...string) (Decider, error)`
+  (`decider.go`) maps the `--evaluator` value to a ready `Decider` — `allowlist` → `*Engine`,
+  `opa` → a `*OPAEngine` **only if `Ready()`** (otherwise a fail-closed error, no fallback),
+  anything else → an error naming the accepted values.
+- **Consumers:** `ipc.serve` (per-connection `decide` op) and `main.cmdServe` / `main.cmdDecide`
+  (one-shot CLI). Both hold a `Decider` produced by `selectDecider`; the concrete evaluator
+  (`*Engine` or `*OPAEngine`) is chosen by `--evaluator` and is opaque to the consumer.
 - **Stability:** this is **the** seam. Its argument and return value are AuthZEN-shaped JSON-like
   maps; **no engine-specific type may appear in either**. `OPAEngine` marshals the request into a
   Rego input and translates the `rego.ResultSet` back into an AuthZEN response — no `rego.*` / `ast.*`
@@ -112,8 +126,8 @@ success — used by the integration test to skip cleanly when the OPA toolchain 
 
 ## Extension points
 
-The `Decide` seam is the single extension point — a new evaluator is adopted by adding an
-implementation with the identical `Decide(req map[string]any) map[string]any` signature (the
-established pattern: `Engine` for the in-memory allowlist, `OPAEngine` for OPA/Rego), never by
+The `Decider` interface (`Decide(map[string]any) map[string]any`) is the single extension point — a
+new evaluator is adopted by adding a type that satisfies it (the established pattern: `Engine` for
+the in-memory allowlist, `OPAEngine` for OPA/Rego), then a case in `selectDecider`, never by
 changing callers or the contract. There is no plugin registry; extension is by source modification
 behind the seam.

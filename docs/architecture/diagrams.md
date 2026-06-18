@@ -1,6 +1,6 @@
 # Architecture Diagrams — policy-engine
 
-**Last updated:** 2026-06-18 (ADR-002 — OPA/Rego evaluator added behind the seam)
+**Last updated:** 2026-06-18 (task 005 — evaluator selectable at the `Decider` seam via `--evaluator`)
 
 C4-structured Mermaid diagrams plus the primary runtime sequence. See
 [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced
@@ -54,18 +54,22 @@ C4Component
     Person(operator, "Operator")
 
     Container_Boundary(boundary, "policy-engine binary") {
-        Component(main, "CLI / dispatch", "main.go", "serve & decide subcommands; flag parsing; Engine construction")
-        Component(ipc, "IPC server", "ipc.go", "JSON over Unix socket; frames {op,request}; dispatch decide/ping")
-        Component(engine, "Engine.Decide", "policy.go", "v0 AuthZEN evaluator (in-memory allowlist) — one seam implementation")
+        Component(main, "CLI / dispatch", "main.go", "serve & decide subcommands; flag parsing (--evaluator); selectDecider; exit codes")
+        Component(seam, "Decider seam / selection", "decider.go", "Decider interface + selectDecider: maps --evaluator → engine; fail-closed on OPA init failure (no allowlist fallback)")
+        Component(ipc, "IPC server", "ipc.go", "JSON over Unix socket; frames {op,request}; dispatch decide/ping; routes decide through the selected Decider")
+        Component(engine, "Engine.Decide", "policy.go", "v0 AuthZEN evaluator (in-memory allowlist) — one Decider implementation")
         Component(opa, "OPAEngine.Decide", "opa.go + policy.rego", "OPA/Rego AuthZEN evaluator (ADR-002); marshal request→Rego input, eval embedded policy, translate result→AuthZEN")
     }
 
     Rel(agent, ipc, "decide", "JSON / Unix socket")
-    Rel(operator, main, "serve / decide", "CLI")
-    Rel(main, ipc, "starts (serve)")
-    Rel(main, engine, "calls (decide CLI)")
-    Rel(ipc, engine, "Decide(request)")
-    Rel(ipc, opa, "Decide(request) — same seam, OPA-backed deployment")
+    Rel(operator, main, "serve / decide --evaluator", "CLI")
+    Rel(main, seam, "selectDecider(--evaluator)")
+    Rel(main, ipc, "starts (serve) with selected Decider")
+    Rel(seam, engine, "allowlist → *Engine")
+    Rel(seam, opa, "opa → *OPAEngine (if Ready)")
+    Rel(main, engine, "Decide (decide CLI, via Decider)")
+    Rel(ipc, engine, "Decide(request) — via Decider seam")
+    Rel(ipc, opa, "Decide(request) — same seam, --evaluator opa")
 ```
 
 **Key contracts**
@@ -111,6 +115,10 @@ ADRs governing this flow: [ADR-001](decisions/001-foundational-stack.md) (out-of
 AuthZEN seam, obligation model, fail-closed) and [ADR-002](decisions/002-opa-rego-embedded-library.md)
 (OPA/Rego evaluator). The OPA adoption swaps only the inner evaluator (`OPAEngine.Decide` in place
 of `Engine.Decide`) — this sequence shape, the IPC framing, and the obligation set are preserved.
+The evaluator behind `Decide` is chosen at startup by `--evaluator` (`selectDecider`, task 005); the
+sequence above is identical whichever evaluator is selected, since both sit behind the `Decider`
+seam. Selecting `opa` when OPA cannot init fails closed before the socket binds (no allowlist
+fallback).
 
 ---
 

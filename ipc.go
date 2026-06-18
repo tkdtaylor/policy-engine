@@ -8,8 +8,10 @@ import (
 )
 
 // serve runs the JSON-over-Unix-socket IPC form: {op:"decide", request:{…AuthZEN…}}.
-// policy-engine runs OUT OF PROCESS so a compromised agent cannot self-grant.
-func serve(socketPath string, engine *Engine) error {
+// policy-engine runs OUT OF PROCESS so a compromised agent cannot self-grant. The decision is
+// produced by the supplied Decider (the AuthZEN seam) — either the v0 allowlist *Engine or the
+// OPA-backed *OPAEngine — selected at the binary boundary, not hard-wired here.
+func serve(socketPath string, engine Decider) error {
 	_ = os.Remove(socketPath)
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
