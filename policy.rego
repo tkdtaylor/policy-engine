@@ -26,24 +26,112 @@ package policyengine
 
 default decision := "deny"
 
-# allow iff a host is resolved AND it is in the allowlist.
+# allow iff a host is resolved AND it is in the allowlist AND the approval gate did not trip.
 decision := "allow" {
+	host_allowed
+	not approval_gate
+}
+
+# require_approval is a gate layered ABOVE the risk-scored allow (ADR-003): an otherwise-allowable
+# request (allowlisted host) escalates to require_approval when the approval gate trips. Fail-closed
+# precedence is preserved structurally: the gate is conditioned on host_allowed, so a non-allowlisted
+# host or unresolvable host can NEVER reach require_approval — it stays the default deny.
+decision := "require_approval" {
+	host_allowed
+	approval_gate
+}
+
+# host_allowed is the underlying authorization predicate: a resolved, allowlisted host. It is the
+# shared precondition for both allow and require_approval, and is NEVER true for a denied request.
+host_allowed {
 	input.host != ""
 	input.allowlist[input.host]
 }
 
+# allowed: an emitted decision that carries the risk-scored obligations. Both allow and
+# require_approval carry them (ADR-003 — the floor-raise rides along into the approval state).
 allowed {
-	decision == "allow"
+	host_allowed
 }
 
 reason := msg {
-	allowed
+	host_allowed
 	msg := sprintf("host '%s' is in the net allowlist", [input.host])
 }
 
 reason := msg {
-	not allowed
+	not host_allowed
 	msg := sprintf("host '%s' is not in the net allowlist", [input.host])
+}
+
+# ---------------------------------------------------------------------------
+# require_approval gate (ADR-003): layered ABOVE the risk-scored obligations.
+# ---------------------------------------------------------------------------
+#
+# The gate trips on an otherwise-allowable request when EITHER:
+#   - the risk score is at/above the approval threshold (risk >= 0.9), OR
+#   - the memory state signals a suspicious pattern (injection-suspected).
+# When it trips, the decision becomes require_approval and the response carries a structured
+# escalation payload PLUS the risk-scored tier_select / vault_injection_floor / audit_emit
+# obligations (defense-in-depth rides along while the action is paused).
+#
+# Fail-closed precedence: this gate is only consulted under host_allowed, so a deny is never
+# upgraded to require_approval (see the decision rules above).
+
+# Approval threshold: the top of the firecracker band. risk >= 0.9 escalates rather than
+# auto-allowing into the strongest sandbox.
+approval_threshold := 0.9
+
+risk_at_threshold {
+	valid_risk
+	input.risk >= approval_threshold
+}
+
+approval_gate {
+	risk_at_threshold
+}
+
+approval_gate {
+	injection_flag
+}
+
+# triggered_by names which signal fired. When BOTH fire, the memory flag takes precedence — a
+# suspected-injection pattern is the stronger human-in-the-loop signal (ADR-003), so it is named
+# even when the numeric risk also crossed the threshold.
+triggered_by := "memory_flag" {
+	injection_flag
+}
+
+triggered_by := "risk_threshold" {
+	not injection_flag
+	risk_at_threshold
+}
+
+# Echoed risk for the escalation payload: the numeric risk when valid, else 0 (a missing/invalid
+# risk that reached approval did so via the memory flag, not the threshold).
+echoed_risk := input.risk {
+	valid_risk
+}
+
+echoed_risk := 0 {
+	not valid_risk
+}
+
+approval_reason := "memory state flagged 'injection-suspected'; human approval required before proceeding" {
+	triggered_by == "memory_flag"
+}
+
+approval_reason := sprintf("risk score %v is at or above the approval threshold %v; human approval required before proceeding", [echoed_risk, approval_threshold]) {
+	triggered_by == "risk_threshold"
+}
+
+# The escalation payload — a plain AuthZEN-only JSON object carried as the require_approval
+# obligation's value. No engine-specific type appears here.
+escalation_payload := {
+	"reason":              approval_reason,
+	"risk":                echoed_risk,
+	"triggered_by":        triggered_by,
+	"required_to_proceed": "operator approval",
 }
 
 # ---------------------------------------------------------------------------
@@ -122,16 +210,32 @@ injection_floor := floor_names[max_rank] {
 }
 
 # ---------------------------------------------------------------------------
-# Obligations on allow mirror the v0 emission shape; deny carries none.
+# Obligations: allow and require_approval both carry the risk-scored set; deny carries none.
+# require_approval additionally carries the structured escalation payload (ADR-003).
 # ---------------------------------------------------------------------------
 
+# Risk-scored base obligations, emitted under any host_allowed decision (allow OR require_approval).
+risk_obligations := [
+	{"type": "tier_select", "value": tier},
+	{"type": "vault_injection_floor", "value": injection_floor},
+	{"type": "audit_emit", "value": true},
+]
+
+# allow: the risk-scored obligations only.
+obligations := risk_obligations {
+	allowed
+	not approval_gate
+}
+
+# require_approval: the risk-scored obligations PLUS exactly one require_approval obligation
+# carrying the escalation payload (ADR-003 — the floor-raise rides along into the approval state).
 obligations := obs {
 	allowed
-	obs := [
-		{"type": "tier_select", "value": tier},
-		{"type": "vault_injection_floor", "value": injection_floor},
-		{"type": "audit_emit", "value": true},
-	]
+	approval_gate
+	obs := array.concat(
+		[{"type": "require_approval", "value": escalation_payload}],
+		risk_obligations,
+	)
 }
 
 obligations := [] {

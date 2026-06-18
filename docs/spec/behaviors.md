@@ -17,7 +17,8 @@ points* ([interfaces.md](interfaces.md)).
 
 - **Trigger:** an AuthZEN request arrives — over IPC as `{op:"decide", request:{…}}`, or via the
   one-shot CLI (`decide --host …` or a JSON request on stdin) — whose resolved target host is in
-  the configured net allowlist.
+  the configured net allowlist **and** (on the OPA evaluator) the approval gate (B-008) did not
+  trip (`risk < 0.9` and no `injection-suspected` flag).
 - **Response:** returns `decision: "allow"` with `context.reason` naming the matched host and
   `context.obligations` listing the obligations the caller must honor. The decision may be produced
   by either evaluator behind the seam — the v0 in-memory allowlist or the OPA/Rego evaluator
@@ -62,6 +63,32 @@ points* ([interfaces.md](interfaces.md)).
   For the OPA evaluator, an invalid or missing `context.risk` degrades to the baseline tier
   (`bubblewrap`) and is still an allow if the host is allowlisted (not a hard deny). A
   structurally malformed request (unresolvable host) is a hard `deny`.
+
+### B-008: Escalate to `require_approval` above the approval gate (OPA evaluator)
+
+- **Trigger:** an **otherwise-allowable** request on the OPA/Rego evaluator (`--evaluator opa`) —
+  an allowlisted, resolvable host, not malformed — where **either** `context.risk >= 0.9`
+  (the approval threshold, the top of the `firecracker` band) **or** `context.memory_flags`
+  contains `injection-suspected`.
+- **Response:** `decision: "require_approval"` (the third decision; ADR-003). The gate is layered
+  **above** the task-002 risk-scored obligations: the response carries the structured escalation
+  payload as **one** obligation of type `require_approval`, **plus** the same risk-scored
+  `tier_select`, the (possibly raised) `vault_injection_floor`, and `audit_emit` that an `allow`
+  would carry. The floor-raise from `injection-suspected` therefore **rides along** as
+  defense-in-depth while the action is paused. The escalation payload (`require_approval`
+  obligation `value`) is `{ reason, risk, triggered_by, required_to_proceed }` (see
+  [data-model.md](data-model.md)).
+- **`triggered_by` tie-break:** when both triggers fire (`risk >= 0.9` **and**
+  `injection-suspected`), `triggered_by` is `"memory_flag"` — the suspicious-memory pattern is the
+  stronger human-in-the-loop signal (ADR-003). Threshold-only → `"risk_threshold"`.
+- **Side effects:** none performed by policy-engine; the obligations are a contract the agent
+  honors (pause and escalate, plus the risk-mitigation obligations). The CLI prints the JSON
+  response and exits non-zero (`1`) — `require_approval` is a non-allow decision (B-005).
+- **Failure modes (fail-closed precedence is absolute):** a `deny` is **never** upgraded to
+  `require_approval`. A non-allowlisted/unresolvable host (B-002) and a malformed request are
+  `deny`, decided **before** the approval gate is consulted. Below the threshold with no
+  suspicious flag, the decision stays `allow` (B-001) with the task-002 obligations. The v0
+  in-memory evaluator (`--evaluator allowlist`) does not emit `require_approval`.
 
 ### B-004: Serve decisions over a Unix-socket IPC server
 
@@ -121,6 +148,10 @@ points* ([interfaces.md](interfaces.md)).
   unknown host, malformed request, unknown op — terminates in `deny` or a structured error. This
   holds through the OPA/Rego evaluator too: a policy-preparation failure, eval error, undefined
   result, or unresolvable host all fail closed to `deny`, never an allow and never a leaked error.
+- **Fail-closed precedence: `deny` is decided before the approval gate (B-008).** A malformed
+  request and a non-allowlisted/unresolvable host are `deny`, never `require_approval`. A `deny`
+  is never upgraded to `require_approval`. `require_approval` is strictly a gate on an
+  *otherwise-allowable* request.
 - **The agent never obtains an in-process decision.** All agent-originated decisions cross the IPC
   boundary; the in-process `decide` is the operator CLI only.
 - **Obligations on `vault_injection_floor` only ever raise the floor.**

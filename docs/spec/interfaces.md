@@ -70,6 +70,12 @@ indirectly through **obligations** emitted in the decision, which the agent runt
 | exec-sandbox | `tier_select` | agent runs the action at the named isolation tier | n/a — policy-engine does not call it |
 | vault | `vault_injection_floor` | agent/vault raises the credential floor (never lowers) | n/a — emitted, not called |
 | audit-trail | `audit_emit` | agent emits a decision trace | n/a — emitted, not called |
+| (approver / human-in-the-loop) | `require_approval` | agent pauses and escalates; obligation `value` is the structured escalation payload (`reason`, `risk`, `triggered_by`, `required_to_proceed` — see [data-model.md](data-model.md)) | n/a — emitted, not routed by policy-engine |
+
+The OPA/Rego evaluator emits `require_approval` (with its escalation payload) when the approval
+gate trips (B-008, ADR-003): an otherwise-allowable request with `risk >= 0.9` or
+`injection-suspected`. It rides alongside the risk-scored obligations. The CLI exits non-zero (`1`)
+on a `require_approval` decision — it is a non-allow decision and is not a special exit code.
 
 ---
 

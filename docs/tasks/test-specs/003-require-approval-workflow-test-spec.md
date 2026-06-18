@@ -7,11 +7,11 @@
 
 | Req ID | Test cases | Covered? |
 |--------|-----------|----------|
-| REQ-001 | TC-001, TC-002, TC-003 | ⏳ |
-| REQ-002 | TC-004, TC-005 | ⏳ |
-| REQ-003 | TC-006, TC-007 | ⏳ |
-| REQ-004 | TC-008 | ⏳ |
-| REQ-005 | TC-009 | ⏳ |
+| REQ-001 | TC-001, TC-002, TC-003 | ✅ |
+| REQ-002 | TC-004, TC-005 | ✅ |
+| REQ-003 | TC-006, TC-007 | ✅ |
+| REQ-004 | TC-008 | ✅ |
+| REQ-005 | TC-009 | ✅ |
 
 ## Pre-implementation checklist
 
@@ -80,9 +80,13 @@ as the `require_approval` obligation `value`, an object with at least:
 
 - **Requirement:** REQ-002
 - **Input:** the request from TC-001 (`risk = 0.95`).
-- **Expected output:** `context.obligations` contains exactly one `{type:"require_approval", value:…}`
-  whose `value` is an object with non-empty `reason` (string), `risk == 0.95` (echoed number),
-  `triggered_by == "risk_threshold"`, and a non-empty `required_to_proceed` (string).
+- **Expected output:** `context.obligations` contains exactly **one obligation of type
+  `require_approval`** whose `value` is an object with non-empty `reason` (string), `risk == 0.95`
+  (echoed number), `triggered_by == "risk_threshold"`, and a non-empty `required_to_proceed`
+  (string). Per ADR-003 the risk-scored obligations (`tier_select`, `vault_injection_floor`,
+  `audit_emit`) **coexist** alongside it — "exactly one" constrains only the `require_approval`
+  type, since `require_approval` is a gate layered above the task-002 obligations, not a
+  replacement for them.
 
 ### TC-005: Escalation payload names the memory-flag trigger when the flag fired
 
