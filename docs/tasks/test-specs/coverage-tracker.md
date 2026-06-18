@@ -13,6 +13,9 @@
 | Task ID | Feature | Spec file | Tests written | Status | Verified by |
 |---------|---------|-----------|---------------|--------|-------------|
 | 001 | Adopt OPA (Rego) behind the AuthZEN decide() seam | `001-opa-rego-evaluator-test-spec.md` | spec written | pending | — (planned; L5=`go test ./...`, L6=real OPA-backed decide run) |
+| 002 | Dynamic risk scoring behind the AuthZEN seam | `002-dynamic-risk-scoring-test-spec.md` | spec written | pending | — (planned; L5=`go build ./... && go test ./...`, L6=`decide` low-risk→`tier_select=bubblewrap` & high-risk→`tier_select=firecracker`) |
+| 003 | require_approval workflow (threshold-based escalation) | `003-require-approval-workflow-test-spec.md` | spec written | pending | — (planned; L5=`go build ./... && go test ./...`, L6=`decide` above-threshold→`require_approval` with escalation payload + observed exit code) |
+| 004 | Decision caching + rate limiting | `004-decision-cache-rate-limit-test-spec.md` | spec written | pending | — (planned; L5=`go build ./... && go test ./...` cache+rate-limit unit tests, L6=live IPC cache hit + `rate_limited` retryable error) |
 
 ## Status key
 
