@@ -101,9 +101,8 @@ the caller must treat as deny). Allow is the justified exception, never the fall
 
 ## Open questions
 
-- **Licensing** — `LICENSE` is currently PolyForm Noncommercial 1.0.0. The scoping doc (§3)
-  leaves open whether it stays PolyForm (orchestration is the value-add) or relaxes to MIT if the
-  block proves to be thin glue. **Not decided here** — flagged for a future ADR once the v1
-  orchestration surface is real.
+- **Licensing** — resolved: `LICENSE` is **Apache-2.0** (free for commercial use; no CLA,
+  DCO sign-off required). This supersedes the earlier open question of whether the block would
+  stay PolyForm Noncommercial or relax to MIT.
 - **OPA embedding mechanism** — embedded Go library vs. OPA REST sidecar is decided in ADR-002
   (task 001), not here.

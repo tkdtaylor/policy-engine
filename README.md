@@ -6,7 +6,7 @@ compromised or jailbroken agent cannot self-grant by editing its own code. polic
 gates execution before it reaches `exec-sandbox`, supplies the risk→tier selection, and
 coordinates with `vault` (it may RAISE the injection floor, never lower it).
 
-> Prior-art verdict: **ADOPT OPA (Rego) as the v0 engine; Cedar as a v1 alternative** behind an **OpenID AuthZEN** decision-API seam. We build the orchestration glue (context marshaling, obligation enforcement, vault/exec-sandbox coordination), not a new evaluator. **Language: Go** (OPA/Cedar ecosystem). **License: PolyForm Noncommercial 1.0.0** (orchestration is the value-add; MIT if it proves to be thin glue).
+> Prior-art verdict: **ADOPT OPA (Rego) as the v0 engine; Cedar as a v1 alternative** behind an **OpenID AuthZEN** decision-API seam. We build the orchestration glue (context marshaling, obligation enforcement, vault/exec-sandbox coordination), not a new evaluator. **Language: Go** (OPA/Cedar ecosystem). **License: Apache-2.0.**
 
 ## Contract (interface-contracts.md §2, v1) — AuthZEN-shaped
 
@@ -37,3 +37,26 @@ obligation emission (tier_select, vault_injection_floor→proxy, audit_emit), ou
 over IPC. **Deferred (v1):** embed/front real OPA (Rego) or Cedar behind the AuthZEN seam,
 decision caching, dynamic risk scoring, rate limiting, require_approval workflow, OpenFGA
 multi-tenant rules. See [docs/CONTRACT.md](docs/CONTRACT.md) and the scoping doc.
+
+## License
+
+policy-engine is licensed under the **Apache License 2.0** — free to use, modify, and distribute, including in commercial and proprietary products. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+> **Security notice:** policy-engine is a security tool provided **as-is, without warranty**. It does not guarantee the security of any system. See the disclaimer in [NOTICE](NOTICE).
+
+## Enterprise Support
+
+Need hardened deployments, integration help, or a support SLA? **Commercial support and consulting are available.**
+
+📧 Contact **[tools@taylorguard.me](mailto:tools@taylorguard.me)**
+
+## Sponsorship
+
+policy-engine is independent, open-source security tooling. If it saves you time or risk, consider sponsoring continued development:
+
+- 💜 [GitHub Sponsors](https://github.com/sponsors/tkdtaylor)
+<!-- - 🤝 [Open Collective](https://opencollective.com/policy-engine)  (uncomment once the collective exists) -->
+
+## Contributing
+
+Contributions are welcome and become part of the project under Apache-2.0. See [CONTRIBUTING.md](CONTRIBUTING.md). We use the **Developer Certificate of Origin (DCO)** — sign off your commits with `git commit -s`. No CLA required.
