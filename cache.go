@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 package main
 
 // Decision cache fronting the evaluator on the long-running `serve` path (ADR-004, task 004).

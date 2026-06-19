@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 package main
 
 // Global token-bucket rate limiter for the IPC `decide` path (ADR-004, task 004).

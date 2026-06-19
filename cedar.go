@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 package main
 
 // Cedar-backed evaluator behind the AuthZEN decide() seam (ADR-005, task 006).

@@ -30,8 +30,9 @@ Relicensed PolyForm Noncommercial → Apache-2.0 in commit `36c98cf`. Already do
 
 ## Acceptance criteria
 
-- [ ] [a] `// SPDX-License-Identifier: Apache-2.0` is the first line of every first-party `.go`
-      file; generated/vendored files excluded; committed separately.
+- [x] [a] `// SPDX-License-Identifier: Apache-2.0` is the first line of every first-party `.go`
+      file; generated/vendored files excluded; committed separately. (16 files; `go build ./...`
+      passes, `gofmt -l` clean.)
 - [ ] [b] Relicense pushed to the remote after visibility is confirmed.
 
 ## Out of scope

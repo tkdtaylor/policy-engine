@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 package main
 
 // OPA (Rego)-backed evaluator behind the AuthZEN decide() seam (ADR-002, task 001).

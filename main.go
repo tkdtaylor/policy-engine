@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // Command policy-engine is the out-of-process authorization control plane. It gates every
 // agent action before exec-sandbox runs, so a compromised agent cannot self-grant.
 //
