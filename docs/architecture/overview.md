@@ -1,5 +1,6 @@
-# Architecture Overview — policy-engine
+# Architecture Overview
 
+**Project:** policy-engine
 **Last updated:** 2026-06-18
 
 ## System purpose

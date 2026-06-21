@@ -219,7 +219,7 @@
         "template_hash": "7acf5dfd6ffecca3a9cfc6149d773cdc6e59f71d550f50a19155f58718ae3bce",
         "note": "project name + task 001 row filled; template-derived"
       },
-      "docs/architecture/agent-rules.md": {
+      "docs/agent-rules.md": {
         "template": "assets/templates/common/agent-rules.md",
         "installed_hash": "62f0a21901f0a1937463869d9787415067add1abda07483ff7b9ec6a519e48ec",
         "template_hash": "62f0a21901f0a1937463869d9787415067add1abda07483ff7b9ec6a519e48ec"
