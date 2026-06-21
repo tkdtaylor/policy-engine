@@ -88,5 +88,5 @@ own sequential ADRs (ADR-002 will record the OPA-vs-REST embedding choice).
 ## Design principles
 
 policy-engine follows **Unix philosophy** — composability over monolithic design. The full
-statement lives in `CLAUDE.md`; the load-bearing instance here is the AuthZEN seam: a small,
+statement lives in `AGENTS.md`; the load-bearing instance here is the AuthZEN seam: a small,
 well-defined contract that lets independently-evolving evaluators plug in without entanglement.
