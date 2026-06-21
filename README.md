@@ -8,6 +8,17 @@ coordinates with `vault` (it may RAISE the injection floor, never lower it).
 
 > Prior-art verdict: **ADOPT OPA (Rego) as the v0 engine; Cedar as a v1 alternative** behind an **OpenID AuthZEN** decision-API seam. We build the orchestration glue (context marshaling, obligation enforcement, vault/exec-sandbox coordination), not a new evaluator. **Language: Go** (OPA/Cedar ecosystem). **License: Apache-2.0.**
 
+## Scope
+
+**What policy-engine does:** out-of-process authorization for AI actions — control-plane glue over OPA/Cedar with risk→tier scoring and approval gating.
+
+**What it does *not* do (and which sibling owns it instead):**
+- Be a replacement policy *evaluator* — it adopts OPA/Cedar behind the AuthZEN seam, not a new engine
+- Isolate or execute the action it authorizes → **exec-sandbox**
+- Record the tamper-evident forensic log of decisions → **audit-trail**
+
+`policy-engine` is one block in a composable secure-agent ecosystem — each block is standalone and independently usable, and composes with its siblings over published contracts rather than absorbing their responsibilities (no central "god object").
+
 ## Contract (interface-contracts.md §2, v1) — AuthZEN-shaped
 
 ```
@@ -55,7 +66,6 @@ Need hardened deployments, integration help, or a support SLA? **Commercial supp
 policy-engine is independent, open-source security tooling. If it saves you time or risk, consider sponsoring continued development:
 
 - 💜 [GitHub Sponsors](https://github.com/sponsors/tkdtaylor)
-<!-- - 🤝 [Open Collective](https://opencollective.com/policy-engine)  (uncomment once the collective exists) -->
 
 ## Contributing
 
