@@ -1,6 +1,6 @@
 # Architecture Diagrams — policy-engine
 
-**Last updated:** 2026-06-18 (task 006 — Cedar as a third evaluator behind the Decider seam, baseline parity, ADR-005)
+**Last updated:** 2026-06-21 (task 006 — Cedar as a third evaluator behind the Decider seam, baseline parity, ADR-005)
 
 C4-structured Mermaid diagrams plus the primary runtime sequence. See
 [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced
@@ -107,7 +107,7 @@ sequenceDiagram
 
     Agent->>IPC: {"op":"decide","request":{subject,action,resource,context}}
     IPC->>IPC: parse newline-delimited JSON
-    alt malformed / missing request
+    alt malformed or missing request
         IPC-->>Agent: {"error":{code,message,retryable:false}}
     else over rate limit (serve path)
         IPC->>RL: Allow()
@@ -119,8 +119,8 @@ sequenceDiagram
         RL-->>IPC: true (token consumed)
         IPC->>Cache: Decide(request) — via Decider seam (serve)
         alt unexpired entry for canonical full-request key (incl. context)
-            Cache-->>IPC: cached decision (byte-identical; never upgraded to allow)
-        else miss / expired
+            Cache-->>IPC: cached decision (byte-identical, never upgraded to allow)
+        else miss or expired
             Cache->>Engine: Decide(request)
             Engine->>Engine: resolve host = resource.id (or properties.host)
             alt host in allowlist
@@ -132,7 +132,7 @@ sequenceDiagram
             Cache-->>IPC: decision
         end
         IPC-->>Agent: decision (+ obligations on allow)
-        Note over Agent: on allow, honor obligations then invoke exec-sandbox;<br/>on deny, exec-sandbox is never invoked
+        Note over Agent: on allow, honor obligations then invoke exec-sandbox,<br/>on deny, exec-sandbox is never invoked
     end
 ```
 
