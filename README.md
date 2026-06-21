@@ -1,10 +1,6 @@
 # policy-engine — out-of-process authorization & risk-based orchestration
 
-Answers one question: *can the agent perform this action, given its identity, the resource,
-the risk level, and the memory state?* The decision is made **out of process** — a
-compromised or jailbroken agent cannot self-grant by editing its own code. policy-engine
-gates execution before it reaches `exec-sandbox`, supplies the risk→tier selection, and
-coordinates with `vault` (it may RAISE the injection floor, never lower it).
+Answers one question: *can the agent perform this action, given its identity, the resource, the risk level, and the memory state?* The decision is made **out of process** — a compromised or jailbroken agent cannot self-grant by editing its own code. policy-engine gates execution before it reaches `exec-sandbox`, supplies the risk→tier selection, and coordinates with `vault` (it may RAISE the injection floor, never lower it).
 
 > Prior-art verdict: **ADOPT OPA (Rego) as the v0 engine; Cedar as a v1 alternative** behind an **OpenID AuthZEN** decision-API seam. We build the orchestration glue (context marshaling, obligation enforcement, vault/exec-sandbox coordination), not a new evaluator. **Language: Go** (OPA/Cedar ecosystem). **License: Apache-2.0.**
 
@@ -41,13 +37,17 @@ policy-engine decide --allow api.example.com --host evil.example.net   # exits n
 
 IPC: `{"op":"decide","request":{…AuthZEN…}}` · `{"op":"ping"}`.
 
+## Documentation
+
+- [docs/architecture/overview.md](docs/architecture/overview.md) — system design and design principles
+- [docs/architecture/diagrams.md](docs/architecture/diagrams.md) — C4 diagrams and runtime flows
+- [docs/spec/SPEC.md](docs/spec/SPEC.md) — authoritative spec
+- [docs/CONTRACT.md](docs/CONTRACT.md) — the AuthZEN decision contract
+- [docs/plans/roadmap.md](docs/plans/roadmap.md) — roadmap and current status
+
 ## Status
 
-🚧 **v0 skeleton, v1 contract.** Working AuthZEN decide with a single allowlist rule +
-obligation emission (tier_select, vault_injection_floor→proxy, audit_emit), out-of-process
-over IPC. **Deferred (v1):** embed/front real OPA (Rego) or Cedar behind the AuthZEN seam,
-decision caching, dynamic risk scoring, rate limiting, require_approval workflow, OpenFGA
-multi-tenant rules. See [docs/CONTRACT.md](docs/CONTRACT.md) and the scoping doc.
+🚧 **v0 skeleton, v1 contract.** Working AuthZEN decide with a single allowlist rule + obligation emission (tier_select, vault_injection_floor→proxy, audit_emit), out-of-process over IPC. See the [roadmap](docs/plans/roadmap.md) for deferred work and planned features.
 
 ## License
 
