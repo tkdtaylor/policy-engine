@@ -1,6 +1,6 @@
 # policy-engine — out-of-process authorization & risk-based orchestration
 
-Answers one question: *can the agent perform this action, given its identity, the resource, the risk level, and the memory state?* The decision is made **out of process** — a compromised or jailbroken agent cannot self-grant by editing its own code. policy-engine gates execution before it reaches `exec-sandbox`, supplies the risk→tier selection, and coordinates with `vault` (it may RAISE the injection floor, never lower it).
+Answers one question: *can the agent perform this action, given its identity, the resource, the risk level, and the memory state?* The decision is made **out of process** — a compromised or jailbroken agent cannot self-grant by editing its own code. policy-engine gates execution before it reaches [exec-sandbox](https://github.com/tkdtaylor/exec-sandbox), supplies the risk→tier selection, and coordinates with [vault](https://github.com/tkdtaylor/vault) (it may RAISE the injection floor, never lower it).
 
 > Prior-art verdict: **ADOPT OPA (Rego) as the v0 engine; Cedar as a v1 alternative** behind an **OpenID AuthZEN** decision-API seam. We build the orchestration glue (context marshaling, obligation enforcement, vault/exec-sandbox coordination), not a new evaluator. **Language: Go** (OPA/Cedar ecosystem). **License: Apache-2.0.**
 
@@ -11,7 +11,7 @@ Answers one question: *can the agent perform this action, given its identity, th
 **What it does *not* do (and which sibling owns it instead):**
 - Be a replacement policy *evaluator* — it adopts OPA/Cedar behind the AuthZEN seam, not a new engine
 - Isolate or execute the action it authorizes → **exec-sandbox**
-- Record the tamper-evident forensic log of decisions → **audit-trail**
+- Record the tamper-evident forensic log of decisions → **[audit-trail](https://github.com/tkdtaylor/audit-trail)**
 
 `policy-engine` is one block in a composable secure-agent ecosystem — each block is standalone and independently usable, and composes with its siblings over published contracts rather than absorbing their responsibilities (no central "god object").
 
