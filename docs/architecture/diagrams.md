@@ -124,9 +124,9 @@ sequenceDiagram
             Cache->>Engine: Decide(request)
             Engine->>Engine: resolve host = resource.id (or properties.host)
             alt host in allowlist
-                Engine-->>Cache: {decision:"allow", context:{reason, obligations:[tier_select, vault_injection_floor, audit_emit]}}
+                Engine-->>Cache: {decision:"allow", context:{reason, obligations:(tier_select, vault_injection_floor, audit_emit)}}
             else host not in allowlist (fail-closed default)
-                Engine-->>Cache: {decision:"deny", context:{reason, obligations:[]}}
+                Engine-->>Cache: {decision:"deny", context:{reason, obligations:none}}
             end
             Cache->>Cache: store decision until now+TTL
             Cache-->>IPC: decision
