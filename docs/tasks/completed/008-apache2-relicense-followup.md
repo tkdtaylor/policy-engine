@@ -2,12 +2,12 @@
 
 **Project:** policy-engine
 **Created:** 2026-06-19
-**Status:** ready
+**Status:** completed
 
 ## Goal
 
 Finish the Apache-2.0 relicense. The license swap and adoption package already landed in commit
-`36c98cf`; two follow-on items remain: add SPDX identifiers to every first-party Go source file,
+`36c98cf`; two follow-on items remained: add SPDX identifiers to every first-party Go source file,
 and push the relicense once repo visibility is confirmed.
 
 ## Context
@@ -33,7 +33,7 @@ Relicensed PolyForm Noncommercial → Apache-2.0 in commit `36c98cf`. Already do
 - [x] [a] `// SPDX-License-Identifier: Apache-2.0` is the first line of every first-party `.go`
       file; generated/vendored files excluded; committed separately. (16 files; `go build ./...`
       passes, `gofmt -l` clean.)
-- [ ] [b] Relicense pushed to the remote after visibility is confirmed.
+- [x] [b] Relicense pushed to the remote — visibility confirmed **private** by the operator; `main` (relicense + SPDX commits included) pushed to `tkdtaylor/policy-engine`.
 
 ## Out of scope
 
