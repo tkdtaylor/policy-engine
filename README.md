@@ -1,72 +1,151 @@
-# policy-engine — out-of-process authorization & risk-based orchestration
+# policy-engine
 
-Answers one question: *can the agent perform this action, given its identity, the resource, the risk level, and the memory state?* The decision is made **out of process** — a compromised or jailbroken agent cannot self-grant by editing its own code. policy-engine gates execution before it reaches [exec-sandbox](https://github.com/tkdtaylor/exec-sandbox), supplies the risk→tier selection, and coordinates with [vault](https://github.com/tkdtaylor/vault) (it may RAISE the injection floor, never lower it).
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Go version](https://img.shields.io/github/go-mod/go-version/tkdtaylor/policy-engine)](go.mod)
+[![Last commit](https://img.shields.io/github/last-commit/tkdtaylor/policy-engine)](https://github.com/tkdtaylor/policy-engine/commits)
 
-> Prior-art verdict: **ADOPT OPA (Rego) as the v0 engine; Cedar as a v1 alternative** behind an **OpenID AuthZEN** decision-API seam. We build the orchestration glue (context marshaling, obligation enforcement, vault/exec-sandbox coordination), not a new evaluator. **Language: Go** (OPA/Cedar ecosystem). **License: Apache-2.0.**
+**Out-of-process authorization for autonomous agents.** You hand it a decision request; it
+returns `allow`, `deny`, or `require_approval` — reached only over IPC so a compromised agent
+cannot self-grant. It gates execution before [exec-sandbox](https://github.com/tkdtaylor/exec-sandbox) runs,
+selects the isolation tier, and may raise (never lower) [vault](https://github.com/tkdtaylor/vault)'s
+credential injection floor.
 
-## Scope
+It's a **composable block** in the [Secure Agent Ecosystem](https://github.com/tkdtaylor/agent-builder#the-building-blocks) — one piece of the security seams, not a framework. The decision contract is [OpenID AuthZEN](https://openid.net/wordpress-content/uploads/2024/10/openid-authzen-specification-1_0.pdf)-shaped so OPA, Cedar, or OpenFGA can sit behind it. Part of a series licensed Apache-2.0.
 
-**What policy-engine does:** out-of-process authorization for AI actions — control-plane glue over OPA/Cedar with risk→tier scoring and approval gating.
+> **Status.** v0 (`allowlist` evaluator) ships; v1 adds OPA and Cedar backends
+> (`--evaluator opa|cedar`), risk scoring, and `require_approval` gating — all shipped. Remaining work
+> is obligation enforcement end-to-end with consumer blocks. See the [roadmap](docs/plans/roadmap.md).
 
-**What it does *not* do (and which sibling owns it instead):**
-- Be a replacement policy *evaluator* — it adopts OPA/Cedar behind the AuthZEN seam, not a new engine
-- Isolate or execute the action it authorizes → **exec-sandbox**
-- Record the tamper-evident forensic log of decisions → **[audit-trail](https://github.com/tkdtaylor/audit-trail)**
+## Contents
 
-`policy-engine` is one block in a composable secure-agent ecosystem — each block is standalone and independently usable, and composes with its siblings over published contracts rather than absorbing their responsibilities (no central "god object").
+- [Quick start](#quick-start)
+- [How it works](#how-it-works)
+- [Decision tiers](#decision-tiers)
+- [Develop locally](#develop-locally)
+- [Tech stack](#tech-stack)
+- [Sponsorship](#sponsorship)
+- [Enterprise support](#enterprise-support)
+- [License](#license)
 
-## Contract ([docs/CONTRACT.md](docs/CONTRACT.md), v1) — AuthZEN-shaped
+## Quick start
 
-```
-decide(context) -> { decision: allow|deny|require_approval, context:{ reason, obligations:[] } }
-request  = { subject, action:{name}, resource:{type,id,properties}, context:{risk, memory_flags} }
-obligations: tier_select | vault_injection_floor | require_approval | audit_emit
-```
+The fastest way to see it work needs only a Go compiler:
 
-Validated by the tracer-bullet (A4): a non-allowlisted host is denied and **exec-sandbox is
-never invoked**; an allowed host returns obligations that raise the vault injection floor to
-`proxy`. Risk inputs needed only `{id, action, host, risk}` (tracer decision D3).
-
-## Build & run
-
-```sh
+```bash
+git clone https://github.com/tkdtaylor/policy-engine && cd policy-engine
 go build ./... && go test ./...
-policy-engine serve  --socket /run/policy.sock --allow api.example.com
-policy-engine decide --allow api.example.com --host evil.example.net   # exits non-zero on deny
+
+go run . decide --allow api.example.com --host api.example.com
+# Output: { "decision": "allow", "context": { ... } }
+
+go run . decide --allow api.example.com --host evil.example.net
+# Output: { "decision": "deny", "context": { "reason": "host not allowlisted" } }
+# Exit code: 1
 ```
 
-IPC: `{"op":"decide","request":{…AuthZEN…}}` · `{"op":"ping"}`.
+To run the server on a Unix socket and ask it decisions over IPC:
 
-## Documentation
+```bash
+go run . serve --socket /tmp/policy.sock --allow api.example.com &
+# Send: { "op": "decide", "request": { "subject": {...}, "action": {...}, "resource": {...}, "context": {...} } }
+# Recv: { "decision": "allow", "context": { "reason": "...", "obligations": [...] } }
+```
 
-- [docs/architecture/overview.md](docs/architecture/overview.md) — system design and design principles
-- [docs/architecture/diagrams.md](docs/architecture/diagrams.md) — C4 diagrams and runtime flows
-- [docs/spec/SPEC.md](docs/spec/SPEC.md) — authoritative spec
-- [docs/CONTRACT.md](docs/CONTRACT.md) — the AuthZEN decision contract
-- [docs/plans/roadmap.md](docs/plans/roadmap.md) — roadmap and current status
+See [docs/CONTRACT.md](docs/CONTRACT.md) for the full AuthZEN request/response shape.
 
-## Status
+## How it works
 
-🚧 **v0 skeleton, v1 contract.** Working AuthZEN decide with a single allowlist rule + obligation emission (tier_select, vault_injection_floor→proxy, audit_emit), out-of-process over IPC. See the [roadmap](docs/plans/roadmap.md) for deferred work and planned features.
+You submit an AuthZEN request (subject, action, resource, context). The policy-engine evaluates it
+against the configured backend — allowlist, OPA, or Cedar — and returns a decision plus any
+obligations the agent must honor.
 
-## License
+```mermaid
+flowchart LR
+  R["AuthZEN request<br/>(subject, action, resource, context)"] --> E["Evaluate<br/>(allowlist | OPA | Cedar)"]
+  E --> D["Decision<br/>(allow | deny | require_approval)"]
+  D --> O["Emit obligations<br/>(tier_select, vault_injection_floor,<br/>require_approval, audit_emit)"]
+  O --> A["Agent observes &<br/>honors"]
+```
 
-policy-engine is licensed under the **Apache License 2.0** — free to use, modify, and distribute, including in commercial and proprietary products. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+The key properties:
 
-> **Security notice:** policy-engine is a security tool provided **as-is, without warranty**. It does not guarantee the security of any system. See the disclaimer in [NOTICE](NOTICE).
+- **Out-of-process only.** The agent reaches the engine solely over IPC (Unix socket). There is no
+  in-process `decide()` the agent can call to flip its own decision.
+- **Fail-closed.** Unknown action, malformed request, or evaluation error → `deny`. The default
+  posture is denial.
+- **AuthZEN seam stays clean.** The request/response contract is engine-agnostic. No OPA-specific
+  or Cedar-specific type leaks through.
+- **Raise-only injection floor.** The `vault_injection_floor` obligation may raise vault's floor
+  from `env` to `proxy`, never lower it.
 
-## Enterprise Support
+Deeper detail: [architecture overview](docs/architecture/overview.md),
+[diagrams](docs/architecture/diagrams.md), and the [spec](docs/spec/SPEC.md).
 
-Need hardened deployments, integration help, or a support SLA? **Commercial support and consulting are available.**
+## Decision tiers
 
-📧 Contact **[tools@taylorguard.me](mailto:tools@taylorguard.me)**
+policy-engine returns one of three decisions:
+
+| Decision | Meaning | Agent action |
+|----------|---------|--------------|
+| `allow` | The request is authorized. Proceed. | Execute the action as requested. |
+| `deny` | The request is not authorized. Stop. | Escalate to operator; do not execute. |
+| `require_approval` | The request needs human sign-off before execution. | Pause and escalate. |
+
+Obligations further refine the allow:
+
+| Obligation | Meaning |
+|-----------|---------|
+| `tier_select` | exec-sandbox runs at this isolation tier (bubblewrap, gvisor, firecracker). |
+| `vault_injection_floor` | vault injects credentials at this floor (env or proxy). |
+| `audit_emit` | Emit a full decision trace to audit-trail. |
+
+## Develop locally
+
+```bash
+go test ./...                 # tests
+go build ./...                # compile
+make check                    # the verification gate: lint + test + build
+```
+
+Supporting evaluator backends:
+
+```bash
+# Allowlist (v0 default)
+go run . decide --evaluator allowlist --allow api.example.com --host api.example.com
+
+# OPA/Rego
+go run . decide --evaluator opa --allow api.example.com --host api.example.com
+
+# Cedar
+go run . decide --evaluator cedar --allow api.example.com --host api.example.com
+```
+
+Server with caching and rate limiting:
+
+```bash
+go run . serve --socket /tmp/policy.sock --evaluator opa --cache-ttl 5s --rate-limit 100
+```
+
+Contributing runs through a test-spec-first, one-task-one-branch workflow. Read
+[AGENTS.md](AGENTS.md) (the canonical briefing) and
+[CONTRIBUTING.md](CONTRIBUTING.md) before starting; tasks and their specs live under
+[docs/tasks/](docs/tasks/).
+
+## Tech stack
+
+Go 1.26 — static binary, no runtime dependencies in v0. OPA and Cedar are embedded (vendored Go
+libraries). The IPC server uses only the standard library (`net`, `encoding/json`).
 
 ## Sponsorship
 
-policy-engine is independent, open-source security tooling. If it saves you time or risk, consider sponsoring continued development:
+policy-engine is independent, open-source security tooling. If it saves you time or risk, [sponsoring its development](https://github.com/sponsors/tkdtaylor) is the most direct way to keep it maintained.
 
-- 💜 [GitHub Sponsors](https://github.com/sponsors/tkdtaylor)
+## Enterprise support
 
-## Contributing
+Commercial support, integration help, and SLAs are available. Apache-2.0 means you can build on policy-engine freely; paid support is a partner if you want one, never a requirement. Contact [tools@taylorguard.me](mailto:tools@taylorguard.me).
 
-Contributions are welcome and become part of the project under Apache-2.0. See [CONTRIBUTING.md](CONTRIBUTING.md). We use the **Developer Certificate of Origin (DCO)** — sign off your commits with `git commit -s`. No CLA required.
+## License
+
+[Apache License 2.0](LICENSE) — consistent with the Secure Agent Ecosystem. See [NOTICE](NOTICE)
+for attribution and disclaimers, and [CONTRIBUTING.md](CONTRIBUTING.md) for the inbound=outbound
+/ DCO contribution terms.
