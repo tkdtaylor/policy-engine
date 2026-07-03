@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net"
 	"os"
+	"syscall"
 )
 
 // rateLimiter gates the IPC decide op. Implemented by *tokenBucket (ratelimit.go). A nil limiter
@@ -21,14 +22,31 @@ type rateLimiter interface {
 // OPA-backed *OPAEngine — selected at the binary boundary, not hard-wired here. On the serve path
 // the Decider may be wrapped by a cachingDecider (ADR-004); the cache composes through the seam and
 // is invisible here. The limiter (when non-nil) gates the decide op BEFORE evaluation.
-func serve(socketPath string, engine Decider, limiter rateLimiter) error {
+// listenUnix opens the decide socket with owner-only permissions from the moment it
+// exists: the umask is narrowed around the bind so there is no window in which the
+// socket is group/world-accessible, and the follow-up Chmod (belt-and-braces for
+// platforms that ignore the umask on socket inodes) is error-checked, not discarded.
+func listenUnix(socketPath string) (net.Listener, error) {
 	_ = os.Remove(socketPath)
+	old := syscall.Umask(0o177)
 	ln, err := net.Listen("unix", socketPath)
+	syscall.Umask(old)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(socketPath, 0o600); err != nil {
+		_ = ln.Close()
+		return nil, err
+	}
+	return ln, nil
+}
+
+func serve(socketPath string, engine Decider, limiter rateLimiter) error {
+	ln, err := listenUnix(socketPath)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = ln.Close() }()
-	_ = os.Chmod(socketPath, 0o600)
 
 	for {
 		conn, err := ln.Accept()
