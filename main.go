@@ -2,7 +2,7 @@
 // Command policy-engine is the out-of-process authorization control plane. It gates every
 // agent action before exec-sandbox runs, so a compromised agent cannot self-grant.
 //
-// Contract (interface-contracts.md §2, v1): AuthZEN-shaped
+// Contract (docs/CONTRACT.md, v1): AuthZEN-shaped
 //
 //	decide(context) -> { decision, context:{ reason, obligations:[] } }
 //

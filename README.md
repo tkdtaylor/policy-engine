@@ -15,7 +15,7 @@ Answers one question: *can the agent perform this action, given its identity, th
 
 `policy-engine` is one block in a composable secure-agent ecosystem — each block is standalone and independently usable, and composes with its siblings over published contracts rather than absorbing their responsibilities (no central "god object").
 
-## Contract (interface-contracts.md §2, v1) — AuthZEN-shaped
+## Contract ([docs/CONTRACT.md](docs/CONTRACT.md), v1) — AuthZEN-shaped
 
 ```
 decide(context) -> { decision: allow|deny|require_approval, context:{ reason, obligations:[] } }
@@ -25,7 +25,7 @@ obligations: tier_select | vault_injection_floor | require_approval | audit_emit
 
 Validated by the tracer-bullet (A4): a non-allowlisted host is denied and **exec-sandbox is
 never invoked**; an allowed host returns obligations that raise the vault injection floor to
-`proxy`. Risk inputs needed only `{id, action, host, risk}` (decisions.md D3).
+`proxy`. Risk inputs needed only `{id, action, host, risk}` (tracer decision D3).
 
 ## Build & run
 

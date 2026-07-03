@@ -105,7 +105,7 @@ evaluator emits the maximum, never the minimum. Absent or empty `memory_flags` l
 baseline floor (`env`) unchanged. The v0 in-memory evaluator ignores `memory_flags` and always
 emits `vault_injection_floor=proxy`.
 
-- **Versioning:** v1 contract (mirrors `interface-contracts.md §2`). Engine-agnostic by design.
+- **Versioning:** v1 contract ([docs/CONTRACT.md](../CONTRACT.md)). Engine-agnostic by design.
 - **Example:**
 
 ```json

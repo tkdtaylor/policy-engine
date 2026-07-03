@@ -1,7 +1,6 @@
 # policy-engine v1 contract (AuthZEN)
 
-Mirrors `interface-contracts.md §2`, validated by the
-tracer-bullet (A4).
+Validated by the ecosystem tracer-bullet (A4).
 
 ## decide(request) -> response
 

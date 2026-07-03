@@ -25,8 +25,7 @@ self-grant by editing its own code. It gates execution before it reaches
 `exec-sandbox`, supplies the risk→tier selection, and coordinates with `vault` (it
 may RAISE the injection floor, never lower it).
 
-Authoritative design: `policy-engine.md` +
-`interface-contracts.md` (v1). The full as-built record is
+Authoritative contract: [docs/CONTRACT.md](docs/CONTRACT.md) (v1). The full as-built record is
 [ADR-001](docs/architecture/decisions/001-foundational-stack.md).
 
 ## Architectural invariants

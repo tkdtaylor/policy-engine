@@ -6,8 +6,7 @@ selects the isolation tier, and raises (never lowers) vault's credential injecti
 decision contract is OpenID **AuthZEN**-shaped so the evaluator behind it can be swapped without
 touching callers.
 
-Authoritative design: the project's internal design notes
-+ `interface-contracts.md §2 (v1)`. As-built foundational stack:
+Authoritative contract: [docs/CONTRACT.md](../CONTRACT.md) (v1). As-built foundational stack:
 [ADR-001](../architecture/decisions/001-foundational-stack.md).
 
 ## v0 — AuthZEN decide() + in-memory allowlist + IPC + obligations — ✅ shipped

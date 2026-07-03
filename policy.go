@@ -3,7 +3,7 @@ package main
 
 // policy-engine core — out-of-process authorization.
 //
-// Contract (interface-contracts.md §2, v1): AuthZEN-shaped
+// Contract (docs/CONTRACT.md, v1): AuthZEN-shaped
 //   decide(context) -> { decision, context:{ reason, obligations:[] } }
 //
 // v0 engine: a single allowlist rule (allow a `net` action iff the target host is in the
