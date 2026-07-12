@@ -44,7 +44,7 @@ func cmdServe(args []string) {
 	allow := fs.String("allow", "", "comma-separated net allowlist")
 	evaluator := fs.String("evaluator", EvaluatorAllowlist, "evaluator backend: allowlist|opa|cedar")
 	cacheTTL := fs.Duration("cache-ttl", 5*time.Second, "decision cache TTL (security bound on staleness); 0 disables caching")
-	rateLimit := fs.Float64("rate-limit", 100, "max decisions/sec on the IPC decide path; over-limit returns a rate_limited error (never an allow)")
+	rateLimit := fs.Float64("rate-limit", 100, "max decisions/sec per verified identity (global bucket for identityless requests); over-limit returns a rate_limited error (never an allow)")
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintln(os.Stderr, "serve: "+err.Error())
 		os.Exit(2)
@@ -63,10 +63,12 @@ func cmdServe(args []string) {
 	// Front the evaluator with the decision cache (serve only; ADR-004). The cache composes through
 	// the Decider seam — a hit replays the evaluator's AuthZEN response, never an injected allow.
 	cached := newCachingDecider(engine, *cacheTTL, nil)
-	// Rate-limit the IPC decide op (token bucket). Over-limit is rejected before evaluation with the
-	// rate_limited error — fail-closed, never an allow.
-	limiter := newTokenBucket(*rateLimit, nil)
-	fmt.Fprintf(os.Stderr, "policy-engine serving on %s (evaluator=%s, allow=%v, cache-ttl=%s, rate-limit=%.0f/s)\n",
+	// Rate-limit the IPC decide op, per verified identity (task 009 / ADR-006): each distinct
+	// spiffe_id gets its own token bucket; identityless requests share a global fallback bucket
+	// (v0-compatible). Over-limit is rejected before evaluation with the rate_limited error —
+	// fail-closed, never an allow.
+	limiter := newIdentityBuckets(*rateLimit, defaultMaxIdentityBuckets, nil)
+	fmt.Fprintf(os.Stderr, "policy-engine serving on %s (evaluator=%s, allow=%v, cache-ttl=%s, rate-limit=%.0f/s per identity)\n",
 		*socket, *evaluator, *allow, *cacheTTL, *rateLimit)
 	if err := serve(*socket, cached, limiter); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)

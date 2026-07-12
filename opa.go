@@ -99,6 +99,10 @@ func (e *OPAEngine) Decide(req map[string]any) map[string]any {
 //   - allowlist:    the engine's configured net allowlist
 //   - risk:         context.risk (passed through as-is; Rego validates type + range)
 //   - memory_flags: context.memory_flags as []any (empty slice when absent)
+//   - subject:      {spiffe_id, trust_tier} (task 009), always present with string values ("" when
+//     absent) so a Rego policy CAN match on identity, mirroring the memory_flags normalization.
+//     Extracted via resolveIdentity (identity.go) — the fields are trusted as given, see its
+//     doc comment. `policy.rego` does not read this key yet; carrying it changes no decision.
 //
 // No AuthZEN field is translated here beyond what the policy needs — the translation boundary
 // is this function, and nothing rego.*-typed ever leaves it.
@@ -125,11 +129,17 @@ func buildRegoInput(req map[string]any, host string, allowlist map[string]bool) 
 		memoryFlags = []any{}
 	}
 
+	spiffeID, trustTier := resolveIdentity(req)
+
 	return map[string]any{
 		"host":         host,
 		"allowlist":    allowlist,
 		"risk":         risk,
 		"memory_flags": memoryFlags,
+		"subject": map[string]any{
+			"spiffe_id":  spiffeID,
+			"trust_tier": trustTier,
+		},
 	}
 }
 

@@ -9,11 +9,12 @@ import (
 	"syscall"
 )
 
-// rateLimiter gates the IPC decide op. Implemented by *tokenBucket (ratelimit.go). A nil limiter
-// means no rate limiting is configured (the decide op proceeds unguarded). Allow() returning false
-// is fail-closed: the server rejects with the rate_limited error, never an allow.
+// rateLimiter gates the IPC decide op, keyed by the request's claimed identity (task 009 /
+// ADR-006; "" for identityless requests). Implemented by *identityBuckets (ratelimit.go). A nil
+// limiter means no rate limiting is configured (the decide op proceeds unguarded). Allow()
+// returning false is fail-closed: the server rejects with the rate_limited error, never an allow.
 type rateLimiter interface {
-	Allow() bool
+	Allow(identity string) bool
 }
 
 // serve runs the JSON-over-Unix-socket IPC form: {op:"decide", request:{…AuthZEN…}}.
@@ -66,13 +67,19 @@ func serve(socketPath string, engine Decider, limiter rateLimiter) error {
 			}
 			switch req["op"] {
 			case "decide":
-				// Rate-limit the decide op BEFORE evaluation. A rejection is fail-closed: the
-				// structured rate_limited error, NEVER an allow (ADR-004). ping is not limited.
-				if limiter != nil && !limiter.Allow() {
+				// Extract the request FIRST so the limiter can key on its claimed identity (task
+				// 009 / ADR-006) — resolveIdentity is nil-safe, so a missing/malformed request
+				// resolves to identity "" and is charged to the global bucket, never skipped past
+				// the limiter. Rate-limit BEFORE evaluation and BEFORE the missing-request check,
+				// preserving the existing precedence (rate_limited fires before bad_request). A
+				// rejection is fail-closed: the structured rate_limited error, NEVER an allow
+				// (ADR-004). ping is not limited.
+				r, _ := req["request"].(map[string]any)
+				spiffeID, _ := resolveIdentity(r)
+				if limiter != nil && !limiter.Allow(spiffeID) {
 					writeJSON(c, errShapeRetryable("rate_limited", "decision rate limit exceeded; retry after backing off"))
 					return
 				}
-				r, _ := req["request"].(map[string]any)
 				if r == nil {
 					writeJSON(c, errShape("bad_request", "missing request"))
 					return

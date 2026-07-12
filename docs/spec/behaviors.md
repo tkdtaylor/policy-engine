@@ -1,7 +1,7 @@
 # Behaviors
 
 **Project:** policy-engine
-**Last updated:** 2026-06-18
+**Last updated:** 2026-07-12
 
 What the system does, observably — triggering condition, response, externally-visible side
 effects, failure modes. The "you can verify this from outside the process" view.
@@ -133,11 +133,27 @@ points* ([interfaces.md](interfaces.md)).
   cache and is evaluated directly (still fail-closed); nothing is cached. A cache miss-that-errors
   resolves to the evaluator's `deny`, never an `allow`.
 
-### B-010: Rate-limit the IPC decide path (reject-not-allow)
+### B-010: Rate-limit the IPC decide path, per verified identity (reject-not-allow)
 
-- **Trigger:** an IPC `decide` request on the `serve` path. A global token-bucket limiter
-  (default **100 decisions/sec**, configurable via `--rate-limit`; burst capacity = the rate) is
-  consulted **before** evaluation. `ping` is not rate-limited.
+- **Trigger:** an IPC `decide` request on the `serve` path. The request is extracted and its
+  claimed identity resolved (`resolveIdentity`, task 009 / ADR-006: `subject.properties.spiffe_id`,
+  or `""` for an identityless/nil request) **before** the limiter is consulted, so the limiter can
+  key on it. A per-identity token-bucket limiter (`identityBuckets`; default **100
+  decisions/sec** per identity, configurable via `--rate-limit`; burst capacity = the rate) is then
+  consulted **before** evaluation **and before** the missing-request check — this ordering is
+  load-bearing: it preserves the existing precedence (`rate_limited` fires before `bad_request`)
+  and the before-evaluation guarantee. `ping` is not rate-limited.
+  - Each distinct claimed `spiffe_id` gets its **own** token bucket — one identity's exhaustion
+    never starves another's. Identityless requests (and a malformed/nil request, which resolves to
+    `""`) share a **global fallback bucket** with exact v0 single-bucket semantics
+    (back-compat). Identities beyond the configured cap (`defaultMaxIdentityBuckets = 1024`)
+    also share the global fallback bucket rather than getting a fresh one — bounded memory, never
+    a fail-open path for an attacker minting identities.
+  - **Trusted as given (interim, pending agent-mesh task 008):** the `spiffe_id` used to key the
+    bucket is **not validated** — see `identity.go` and ADR-006. Per-identity buckets are an
+    abuse-resistance measure bounded by the cap and the shared fallback bucket, **not an
+    authentication boundary**, until agent-mesh's identity-propagation contract (X.509-SVID
+    verified principal) lands.
 - **Response:** under the limit, the request proceeds to the cache/evaluator (B-009) and decides
   normally. Over the limit, the server returns the stable error shape extended with one new code:
   `{error:{code:"rate_limited", message:<non-empty>, retryable:true}}` — `retryable:true`
@@ -146,8 +162,9 @@ points* ([interfaces.md](interfaces.md)).
 - **Failure modes (fail-closed):** a rejection is **never an allow** — even an allowlisted host
   that would otherwise be allowed receives the `rate_limited` error when over the limit, because the
   rejection happens **before** evaluation. The limiter has no fail-open path: a non-positive
-  configured rate rejects everything rather than falling open to unlimited. The caller treats a
-  `rate_limited` error as a non-allow (fail-closed) and may retry after backing off.
+  configured rate rejects everything (every identity, including `""`) rather than falling open to
+  unlimited. The caller treats a `rate_limited` error as a non-allow (fail-closed) and may retry
+  after backing off.
 
 ### B-005: One-shot CLI decision
 
@@ -228,4 +245,12 @@ points* ([interfaces.md](interfaces.md)).
   served a low-risk cached `allow`.
 - **The rate limiter never falls open (B-010).** An over-limit `decide` is rejected with the
   `rate_limited` error **before** evaluation — never an `allow`, even for an allowlisted host. The
-  limiter has no error-to-allow path.
+  limiter has no error-to-allow path. It is per verified identity since task 009 (ADR-006): a
+  distinct `spiffe_id` never starves another's bucket, and an over-cap or identityless claim shares
+  the global fallback bucket, never a fresh bucket, never an unconditional allow.
+- **Verified-agent identity is trusted as given, loudly (task 009 / ADR-006).**
+  `subject.properties.spiffe_id` / `trust_tier` carry no validation today — no SPIFFE URI syntax
+  check, no signature or peer-credential check. Any caller can claim any identity and it is
+  accepted verbatim until agent-mesh task 008's identity-propagation contract (X.509-SVID verified
+  principal) lands. Per-identity rate-limit buckets are an abuse-resistance measure bounded by a
+  cap and a shared fallback bucket, not an authentication boundary.

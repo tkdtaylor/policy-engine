@@ -307,8 +307,10 @@ func (f *fakeClock) advance(d time.Duration) {
 // Rate-limit rejection returns the stable retryable error shape over the live IPC path.
 func TestRateLimitRejectionErrorShape(t *testing.T) {
 	d := NewEngine("api.example.com")
-	// capacity 1: the second decide within the same instant is over the limit.
-	limiter := newTokenBucket(1, nil)
+	// capacity 1: the second decide within the same instant is over the limit. cacheReq builds an
+	// identityless subject, so this exercises the identityBuckets global fallback bucket (task 009)
+	// with exact v0 single-bucket semantics (REQ-004).
+	limiter := newIdentityBuckets(1, defaultMaxIdentityBuckets, nil)
 	sock := filepath.Join(t.TempDir(), "rl.sock")
 	go func() { _ = serve(sock, d, limiter) }()
 	waitForSocket(t, sock)
@@ -339,7 +341,7 @@ func TestRateLimitRejectionErrorShape(t *testing.T) {
 // Rate-limit rejection never falls open to allow — even for an allowlisted host that would be allowed.
 func TestRateLimitNeverAllows(t *testing.T) {
 	d := NewEngine("api.example.com") // api.example.com WOULD be allowed under the limit
-	limiter := newTokenBucket(1, nil)
+	limiter := newIdentityBuckets(1, defaultMaxIdentityBuckets, nil)
 	sock := filepath.Join(t.TempDir(), "rl2.sock")
 	go func() { _ = serve(sock, d, limiter) }()
 	waitForSocket(t, sock)
@@ -384,7 +386,7 @@ func TestCacheFailClosedDenyStaysDeny(t *testing.T) {
 func TestRateLimitUnderLimitDecidesNormally(t *testing.T) {
 	d := NewEngine("api.example.com")
 	// Generous limit so nothing is rejected; mix allow and deny.
-	limiter := newTokenBucket(1000, nil)
+	limiter := newIdentityBuckets(1000, defaultMaxIdentityBuckets, nil)
 	sock := filepath.Join(t.TempDir(), "rl3.sock")
 	go func() { _ = serve(sock, d, limiter) }()
 	waitForSocket(t, sock)
