@@ -1,7 +1,7 @@
 # Interfaces
 
 **Project:** policy-engine
-**Last updated:** 2026-06-18
+**Last updated:** 2026-07-12
 
 The system's contact surface — what calls in, what it calls out to, and the internal public
 boundary. Each is a stable contract; changes here are breaking changes.
@@ -30,7 +30,7 @@ Subcommands:
 | `serve --allow` | string (CSV) | `""` | Comma-separated net allowlist |
 | `serve --evaluator` | string (`allowlist`\|`opa`\|`cedar`) | `allowlist` | Evaluator backend behind the seam; init failure / unknown value → refuse to start (exit `1`). `cedar` reproduces the v0 baseline only (no risk/approval — see behaviors.md) |
 | `serve --cache-ttl` | duration | `5s` | Decision-cache TTL on the IPC `decide` path (security bound on staleness); `0` disables caching |
-| `serve --rate-limit` | float (decisions/sec) | `100` | Token-bucket rate limit on the IPC `decide` op; over-limit → `rate_limited` retryable error (never an allow) |
+| `serve --rate-limit` | float (decisions/sec) | `100` | Per-verified-identity token-bucket rate limit on the IPC `decide` op (task 009 / ADR-006; global fallback bucket for identityless requests); over-limit → `rate_limited` retryable error (never an allow) |
 | `decide` | subcommand | — | One-shot decision; exits non-zero on a non-allow decision |
 | `decide --allow` | string (CSV) | `""` | Comma-separated net allowlist |
 | `decide --host` | string | `""` | Target host shortcut; builds a default AuthZEN request. If empty, a full AuthZEN request is read from stdin |
@@ -158,6 +158,41 @@ empty obligations (byte-for-byte identical to `*Engine`). It deliberately does *
 task-002 risk scoring or task-003 require_approval — those remain `OPAEngine` features. This
 intentional asymmetry (`cedar` = baseline, `opa` = full) is documented in `behaviors.md` and
 ADR-005.
+
+### Identity helpers (task 009 / ADR-006)
+
+```go
+func resolveIdentity(req map[string]any) (spiffeID, trustTier string)   // identity.go — single translation point
+func buildCedarRequest(req map[string]any, host string) cedar.Request   // cedar.go — Cedar-internal, does not cross the seam
+```
+
+- **`resolveIdentity`** is the single translation point from an AuthZEN request's
+  `subject.properties.spiffe_id` / `trust_tier` to the internal `(spiffeID, trustTier)` pair.
+  Called by `buildRegoInput`, `buildCedarRequest`, and the IPC decide op (`ipc.go`) — the only
+  three read sites; each goes through this function, never a private re-parse. Absent/malformed
+  input resolves to `("", "")`, never a panic. **Trusted as given**: no validation is performed
+  (see `identity.go`'s doc comment and ADR-006) pending agent-mesh task 008.
+- **`buildCedarRequest`** is `CedarEngine.Decide`'s internal request-construction step, factored
+  out for direct testing. It returns a `cedar.Request` — this does **not** violate the seam
+  discipline: only `Decide`'s own argument and return value are the AuthZEN seam boundary
+  (`buildRegoInput` similarly returns a Rego-shaped input map from inside `OPAEngine`).
+
+```go
+type rateLimiter interface { Allow(identity string) bool }   // ipc.go — the IPC decide-op gate
+
+func newIdentityBuckets(ratePerSec float64, maxIdentities int, now clock) *identityBuckets   // ratelimit.go
+func (l *identityBuckets) Allow(identity string) bool
+```
+
+- **`rateLimiter`** was rekeyed from `Allow() bool` to `Allow(identity string) bool` (task 009 /
+  ADR-006) — a breaking change to this internal interface, not to the AuthZEN contract. Implemented
+  by `*identityBuckets` (`ratelimit.go`), which the IPC decide op (`ipc.go`) consults BEFORE the
+  missing-request check, keyed on `resolveIdentity`'s result. A nil limiter still means unguarded
+  (unchanged from task 004).
+- **`identityBuckets`** gives each distinct claimed `spiffe_id` its own `tokenBucket` (the
+  unchanged task-004 primitive) at the configured rate, plus one global fallback bucket for
+  identity `""` and for identities beyond `maxIdentities` (default `defaultMaxIdentityBuckets =
+  1024`). See `data-model.md` and `behaviors.md` (B-010) for the full semantics.
 
 ---
 

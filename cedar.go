@@ -125,16 +125,38 @@ func (e *CedarEngine) Decide(req map[string]any) map[string]any {
 		return denyResponse(host)
 	}
 
-	cedarReq := cedar.Request{
-		Principal: cedar.NewEntityUID(cedarAgentType, cedarAgentID),
-		Action:    cedar.NewEntityUID("Action", cedarActionName),
-		Resource:  cedar.NewEntityUID(cedarHostType, types.String(host)),
-		Context:   cedar.NewRecord(cedar.RecordMap{}),
-	}
+	cedarReq := buildCedarRequest(req, host)
 
 	decision, _ := cedar.Authorize(e.policySet, e.entities, cedarReq)
 
 	return translateCedarDecision(decision, host)
+}
+
+// buildCedarRequest translates an AuthZEN request into a cedar.Request — the identity translation
+// point for Cedar (task 009 / ADR-006). With a spiffe_id present (via resolveIdentity,
+// identity.go) the principal becomes Agent::"<spiffe_id>" and trust_tier rides in the request
+// context record; without one it is exactly the v0 baseline: Agent::"agent" (cedarAgentID) with an
+// empty context record. The embedded cedarPolicy matches any principal, so carrying identity
+// changes no decision.
+//
+// This is an internal helper (package main): returning a cedar.Request from it does not cross the
+// AuthZEN seam — only Decide's own argument and return value are the seam boundary (interfaces.md).
+func buildCedarRequest(req map[string]any, host string) cedar.Request {
+	spiffeID, trustTier := resolveIdentity(req)
+
+	principalID := types.String(cedarAgentID)
+	ctxMap := cedar.RecordMap{}
+	if spiffeID != "" {
+		principalID = types.String(spiffeID)
+		ctxMap["trust_tier"] = types.String(trustTier)
+	}
+
+	return cedar.Request{
+		Principal: cedar.NewEntityUID(cedarAgentType, principalID),
+		Action:    cedar.NewEntityUID("Action", cedarActionName),
+		Resource:  cedar.NewEntityUID(cedarHostType, types.String(host)),
+		Context:   cedar.NewRecord(ctxMap),
+	}
 }
 
 // translateCedarDecision converts Cedar's permit/forbid Decision into the AuthZEN response,

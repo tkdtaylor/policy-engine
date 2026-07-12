@@ -1,7 +1,7 @@
 # Configuration
 
 **Project:** policy-engine
-**Last updated:** 2026-06-18
+**Last updated:** 2026-07-12
 
 Every knob the system exposes. policy-engine is configured entirely by **command-line flags** in
 v0 — there are no config files and no application environment variables.
@@ -32,7 +32,7 @@ The full flag surface is the CLI in [interfaces.md](interfaces.md). The configur
 | `--host` | `decide` | string | `""` | no | Target host shortcut; if empty, a full AuthZEN request is read from stdin |
 | `--evaluator` | `serve`, `decide` | string (`allowlist`\|`opa`\|`cedar`) | `allowlist` | no | Evaluator backend behind the AuthZEN seam. `allowlist` = v0 in-memory `*Engine`; `opa` = OPA/Rego `*OPAEngine` (full risk/approval); `cedar` = Cedar `*CedarEngine` (v0 baseline only — see asymmetry below) |
 | `--cache-ttl` | `serve` | duration | `5s` | no | Decision cache TTL on the IPC `decide` path. **Security bound** on staleness (see below). `0` disables caching. Not applicable to one-shot `decide`. |
-| `--rate-limit` | `serve` | float (decisions/sec) | `100` | no | Max IPC `decide` decisions/sec (token bucket, burst = rate). Over-limit → `rate_limited` retryable error, never an allow. A non-positive value rejects all decide traffic (fail-closed). |
+| `--rate-limit` | `serve` | float (decisions/sec) | `100` | no | Max IPC `decide` decisions/sec **per verified identity** (task 009 / ADR-006; token bucket per `spiffe_id`, burst = rate; global fallback bucket for identityless requests, default cap `1024` distinct identity buckets). Over-limit → `rate_limited` retryable error, never an allow. A non-positive value rejects all decide traffic for every identity (fail-closed). |
 
 **Allowlist source:** the `--allow` CSV is the policy input for all three evaluators. Each entry
 becomes a key in the in-memory `NetAllowlist` ([data-model.md](data-model.md)); the OPA evaluator
@@ -62,11 +62,16 @@ the cache never turns a non-allow into an allow; the key is the full canonical r
 disables caching (a fail-safe — disabling can only cause more evaluation, never a stale allow). The
 one-shot CLI `decide` is never cached (a single decision per process).
 
-**Rate limit (`--rate-limit`):** on the `serve` path, the IPC `decide` op is gated by a global
-token-bucket limiter (default 100/sec, burst capacity = the rate). Over-limit traffic is rejected
-**before** evaluation with `{error:{code:"rate_limited",retryable:true}}` — **never an allow**, even
-for an allowlisted host. `ping` is not limited. A non-positive `--rate-limit` rejects all decide
-traffic (fail-closed; never falls open to unlimited).
+**Rate limit (`--rate-limit`):** on the `serve` path, the IPC `decide` op is gated by a
+**per-verified-identity** token-bucket limiter (task 009 / ADR-006; default 100/sec, burst
+capacity = the rate). Each distinct claimed `spiffe_id` (`subject.properties.spiffe_id`) gets its
+own bucket; identityless requests, and identities beyond the default cap of `1024` distinct
+buckets, share one global fallback bucket with exact v0 single-bucket semantics. Over-limit traffic
+is rejected **before** evaluation with `{error:{code:"rate_limited",retryable:true}}` — **never an
+allow**, even for an allowlisted host. `ping` is not limited. A non-positive `--rate-limit` rejects
+all decide traffic for every identity (fail-closed; never falls open to unlimited). The identity
+itself is **trusted as given** (no validation) pending agent-mesh task 008 — see behaviors.md
+(B-010) and ADR-006.
 
 **Fail-closed on init:** `--evaluator opa` when the embedded OPA query cannot prepare
 (`OPAEngine.Ready()==false`), or `--evaluator cedar` when the embedded Cedar policy set cannot

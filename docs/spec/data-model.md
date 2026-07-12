@@ -1,7 +1,7 @@
 # Data Model
 
 **Project:** policy-engine
-**Last updated:** 2026-06-18
+**Last updated:** 2026-07-12
 
 What data exists, how it's structured, and the wire formats crossing the process boundary.
 policy-engine has **no persistent store** — all state is in-memory or on the wire.
@@ -48,17 +48,31 @@ Each `decide` is evaluated from the request plus the in-memory allowlist; nothin
   `deny`/`require_approval` to `allow`. Including `context` in the key prevents a high-risk request
   from colliding with a low-risk cached `allow`.
 
-### State: rate limiter (`tokenBucket`)
+### State: rate limiter (`identityBuckets`, per-identity since task 009 / ADR-006)
 
-- **Shape:** a token bucket — `{ capacity, tokens, refillRate (tokens/sec), lastRefill: time }`.
-- **Owner:** the IPC `serve` path; one global bucket per server process (no per-subject buckets in
-  v1). Capacity = the configured `--rate-limit` (default `100`); starts full.
-- **Lifetime:** process lifetime; tokens refill continuously at the configured rate.
-- **Concurrency rules:** `Allow()` is guarded by a `sync.Mutex`; safe under concurrent decide
-  goroutines.
-- **Invariant:** **reject-not-allow** — `Allow()` returning `false` causes the server to reject with
-  the `rate_limited` error before evaluation; there is no error-to-allow path. A non-positive
-  configured rate rejects everything (fail-closed), never falls open to unlimited.
+- **Shape:** one `tokenBucket` (`{ capacity, tokens, refillRate (tokens/sec), lastRefill: time }`)
+  per distinct claimed `spiffe_id`, plus one **global fallback bucket** for identityless requests
+  (`spiffe_id == ""`) and for any identity beyond the configured cap. Each bucket's capacity =
+  the configured `--rate-limit` (default `100`); starts full.
+- **Owner:** the IPC `serve` path; one `identityBuckets` per server process. The per-identity map
+  is bounded by `maxIdentities` (`defaultMaxIdentityBuckets = 1024`) — once that many distinct
+  identity buckets exist, a **new** identity shares the global fallback bucket rather than getting
+  a fresh one (bounded memory; never fail-open on identity-minting abuse).
+- **Lifetime:** process lifetime; tokens refill continuously at the configured rate; identity
+  buckets are created lazily on first sight of a `spiffe_id` and never evicted (bounded by the cap,
+  not by TTL).
+- **Concurrency rules:** bucket lookup/creation in `identityBuckets` is guarded by a `sync.Mutex`;
+  each `tokenBucket.Allow()` is independently guarded by its own `sync.Mutex`; safe under
+  concurrent decide goroutines.
+- **Invariant:** **reject-not-allow** — `Allow(identity)` returning `false` causes the server to
+  reject with the `rate_limited` error before evaluation; there is no error-to-allow path. A
+  non-positive configured rate rejects everything for every identity, including `""` (fail-closed),
+  never falls open to unlimited. Identityless requests get **exact v0 single-bucket semantics**
+  (back-compat, REQ-004) via the global fallback bucket.
+- **Identity source (task 009 / ADR-006):** the `spiffe_id` key is `resolveIdentity(request)`
+  (`identity.go`) — see the AuthZEN request schema below for the **trusted as given** caveat: this
+  bucket is an abuse-resistance measure, not an authentication boundary, until agent-mesh task 008
+  lands.
 
 ---
 
@@ -76,6 +90,27 @@ subject  : { type, id, properties? }          # who is acting (e.g. {type:"agent
 action   : { name }                            # what action (e.g. {name:"net"})
 resource : { type, id, properties? }           # target; host = resource.id or properties.host
 context  : { risk: 0..1, memory_flags?:[], request_id? }
+```
+
+**`subject.properties.spiffe_id` / `subject.properties.trust_tier`** (both optional strings, task
+009 / ADR-006) — the ONLY canonical location for a verified-agent identity. `subject.id` is never
+consulted for identity (an opaque `id` that happens to resemble a SPIFFE URI does not become an
+identity). Read by `resolveIdentity` (`identity.go`) and consumed by `buildRegoInput` (Rego
+matchability), `buildCedarRequest` (Cedar principal + context), and the IPC decide op's rate
+limiter (`identityBuckets`, per-`spiffe_id` buckets).
+
+> **TRUSTED AS GIVEN (interim).** Neither field is validated: no SPIFFE URI syntax check, no
+> `trust_tier` enumeration, no signature or peer-credential check. Any caller can claim any
+> `spiffe_id` today and it is accepted verbatim. This is deliberate, pending **agent-mesh task
+> 008**'s identity-propagation contract (X.509-SVID verified principal). Until it lands, the
+> per-identity rate-limit buckets are an abuse-resistance measure (bounded by the identity cap and
+> a shared fallback bucket, see above), not an authentication boundary.
+
+Example identity-carrying subject:
+
+```json
+{ "type": "agent", "id": "spiffe://mesh.local/agent/builder",
+  "properties": {"spiffe_id": "spiffe://mesh.local/agent/builder", "trust_tier": "trusted"} }
 ```
 
 **`context.risk`** — a JSON number in `[0, 1]` representing the estimated risk level of the
@@ -253,3 +288,7 @@ emit `require_approval`.
 - **A `require_approval` response carries exactly one obligation of type `require_approval`** (the
   escalation payload); the risk-scored `tier_select` / `vault_injection_floor` / `audit_emit`
   obligations coexist alongside it.
+- **`subject.properties.spiffe_id` / `trust_tier` are trusted as given (task 009 / ADR-006).**
+  `resolveIdentity` performs no validation; per-identity rate-limit buckets are an
+  abuse-resistance measure bounded by a cap and a shared fallback bucket, not an authentication
+  boundary, until agent-mesh task 008's identity-propagation contract lands.
